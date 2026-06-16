@@ -1,0 +1,8 @@
+{
+  "name": "Anki Concursos",
+  "package": "anki_concursos",
+  "mod": 1720000000,
+  "conflicts": [],
+  "min_point_version": 50,
+  "version": "0.1.0"
+}
