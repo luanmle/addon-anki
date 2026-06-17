@@ -187,3 +187,24 @@ def test_get_addon_status(mock_auth):
         mock_urlopen.return_value = make_mock_response(body_dict=status_response)
         res = client.get_addon_status()
         assert res == status_response
+
+def test_api_client_url_resolution():
+    with patch("anki_concursos.api.client.mw") as mock_mw:
+        # Scenario 1: Only api_environment is set to local
+        mock_mw.addonManager.getConfig.return_value = {"api_environment": "local"}
+        client = ApiClient()
+        assert client.base_url == "http://localhost:8000"
+        
+        # Scenario 2: api_url is set and overrides environment
+        mock_mw.addonManager.getConfig.return_value = {
+            "api_environment": "staging",
+            "api_url": "https://custom-domain.com"
+        }
+        client = ApiClient()
+        assert client.base_url == "https://custom-domain.com"
+        
+        # Scenario 3: Neither set, falls back to default staging URL
+        mock_mw.addonManager.getConfig.return_value = {}
+        client = ApiClient()
+        assert client.base_url == "https://flashcards-stagging-d9c092f5d04d.herokuapp.com"
+

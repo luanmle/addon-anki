@@ -7,16 +7,52 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.api = api
         self.setWindowTitle("Anki Concursos - Settings")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(450)
         
         self.addon_folder = __name__.split('.')[0]
         self.config = mw.addonManager.getConfig(self.addon_folder) or {}
         
         layout = QVBoxLayout(self)
         
+        # Resolve initial environment and display URL
+        from ..consts import API_ENVIRONMENTS, DEFAULT_API_ENVIRONMENT, DEFAULT_API_URL
+        self.env = self.config.get("api_environment", DEFAULT_API_ENVIRONMENT)
+        self.url = self.config.get("api_url", "").strip()
+        
+        if self.url:
+            self.display_url = self.url
+            # Match preset environments if custom URL equals one of them
+            matched_env = "custom"
+            for env_name, env_url in API_ENVIRONMENTS.items():
+                if env_url.rstrip("/") == self.url.rstrip("/"):
+                    matched_env = env_name
+                    break
+            self.env = matched_env
+        else:
+            self.display_url = API_ENVIRONMENTS.get(self.env, DEFAULT_API_URL)
+            
         form = QFormLayout()
-        self.api_url_input = QLineEdit(self.config.get("api_url", "http://localhost:8000"))
+        
+        self.env_cb = QComboBox()
+        self.env_cb.addItem("Staging", "staging")
+        self.env_cb.addItem("Production", "production")
+        self.env_cb.addItem("Local (Development)", "local")
+        self.env_cb.addItem("Custom URL", "custom")
+        
+        # Select active environment in combo box
+        index = self.env_cb.findData(self.env)
+        if index != -1:
+            self.env_cb.setCurrentIndex(index)
+        else:
+            self.env_cb.setCurrentIndex(self.env_cb.findData("custom"))
+            
+        form.addRow("Environment:", self.env_cb)
+        
+        self.api_url_input = QLineEdit(self.display_url)
         form.addRow("API URL:", self.api_url_input)
+        
+        # Connect change event
+        self.env_cb.currentIndexChanged.connect(self.on_env_changed)
         
         self.auto_sync_cb = QCheckBox()
         self.auto_sync_cb.setChecked(self.config.get("auto_sync", False))
@@ -45,6 +81,19 @@ class SettingsDialog(QDialog):
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
         
+        # Set initial enabling/text state
+        self.on_env_changed()
+        
+    def on_env_changed(self):
+        from ..consts import API_ENVIRONMENTS
+        selected_env = self.env_cb.currentData()
+        if selected_env == "custom":
+            self.api_url_input.setEnabled(True)
+        else:
+            self.api_url_input.setEnabled(False)
+            preset_url = API_ENVIRONMENTS.get(selected_env, "")
+            self.api_url_input.setText(preset_url)
+            
     def on_test(self):
         # Temporarily change API URL
         old_url = self.api.base_url
@@ -73,14 +122,26 @@ class SettingsDialog(QDialog):
                 QMessageBox.information(self, "Success", "Data cleared. Please restart Anki.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete DB: {e}")
-
+ 
     def on_accept(self):
-        self.config["api_url"] = self.api_url_input.text().strip().rstrip("/")
+        selected_env = self.env_cb.currentData()
+        self.config["api_environment"] = selected_env
+        
+        if selected_env == "custom":
+            self.config["api_url"] = self.api_url_input.text().strip().rstrip("/")
+        else:
+            self.config["api_url"] = ""
+            
         self.config["auto_sync"] = self.auto_sync_cb.isChecked()
         self.config["log_level"] = self.log_level_cb.currentText()
         mw.addonManager.writeConfig(self.addon_folder, self.config)
         
-        self.api.base_url = self.config["api_url"]
-        
+        # Update active client base_url
+        from ..consts import API_ENVIRONMENTS, DEFAULT_API_URL
+        if self.config["api_url"]:
+            self.api.base_url = self.config["api_url"]
+        else:
+            self.api.base_url = API_ENVIRONMENTS.get(selected_env, DEFAULT_API_URL).rstrip("/")
+            
         QMessageBox.information(self, "Success", "Settings saved.")
         self.accept()
