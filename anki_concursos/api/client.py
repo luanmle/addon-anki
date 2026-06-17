@@ -34,6 +34,19 @@ class ApiError(Exception):
             except Exception:
                 pass
                 
+        # Translate common error patterns to Portuguese for user display
+        lower_msg = message.lower()
+        if "not subscribed" in lower_msg or "sem assinatura" in lower_msg or self.code == "not_subscribed":
+            message = "Você não possui uma assinatura ativa para este baralho."
+        elif "not published" in lower_msg or "não publicado" in lower_msg or self.code == "deck_not_published":
+            message = "Este baralho ainda não foi publicado na plataforma."
+        elif "token expired" in lower_msg or "token_expired" in lower_msg:
+            message = "Sessão expirada. Por favor, faça login novamente."
+        elif "unauthorized" in lower_msg or "incorrect email or password" in lower_msg or "invalid credentials" in lower_msg:
+            message = "Email ou senha incorretos."
+        elif "connection" in lower_msg or "getaddrinfo" in lower_msg or "timed out" in lower_msg:
+            message = "Não foi possível conectar ao servidor. Verifique sua conexão com a internet ou a URL da API."
+            
         super().__init__(message)
 
 
@@ -76,7 +89,7 @@ class ApiClient:
         if require_auth:
             token = self.auth_service.get_token()
             if not token:
-                raise ApiError("Not authenticated", status_code=401)
+                raise ApiError("Usuário não autenticado. Por favor, realize o login para sincronizar.", status_code=401)
             headers["Authorization"] = f"Bearer {token}"
             
         req = urllib.request.Request(url, data=encoded_data, headers=headers, method=method)
@@ -89,27 +102,43 @@ class ApiClient:
                 return json.loads(body)
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8") if e.fp else ""
-            if e.code == 401 and require_auth:
-                logger.info("Access token expired (401). Attempting token refresh...")
-                new_token = self.refresh_token()
-                if new_token:
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    req = urllib.request.Request(url, data=encoded_data, headers=headers, method=method)
+            if e.code == 401:
+                if require_auth:
+                    logger.info("Access token expired (401). Attempting token refresh...")
+                    new_token = None
                     try:
-                        with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                            body = response.read().decode("utf-8")
-                            if not body:
-                                return None
-                            return json.loads(body)
-                    except urllib.error.HTTPError as retry_e:
-                        body = retry_e.read().decode("utf-8") if retry_e.fp else ""
-                        logger.error(f"HTTPError {retry_e.code} on retry of {method} {url}: {body}")
-                        raise ApiError(f"HTTP Error {retry_e.code}", status_code=retry_e.code, response_body=body)
+                        new_token = self.refresh_token()
+                    except Exception as refresh_err:
+                        logger.warning(f"Refresh token endpoint failed or not supported by backend: {refresh_err}")
+                        
+                    if new_token:
+                        headers["Authorization"] = f"Bearer {new_token}"
+                        req = urllib.request.Request(url, data=encoded_data, headers=headers, method=method)
+                        try:
+                            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                                body = response.read().decode("utf-8")
+                                if not body:
+                                    return None
+                                return json.loads(body)
+                        except urllib.error.HTTPError as retry_e:
+                            body = retry_e.read().decode("utf-8") if retry_e.fp else ""
+                            logger.error(f"HTTPError {retry_e.code} on retry of {method} {url}: {body}")
+                            if retry_e.code == 401:
+                                self.auth_service.clear_token()
+                                raise ApiError("Sessão expirada. Por favor, faça login novamente.", status_code=401, response_body=body)
+                            raise ApiError(f"HTTP Error {retry_e.code}", status_code=retry_e.code, response_body=body)
+                    else:
+                        self.auth_service.clear_token()
+                        raise ApiError("Sessão expirada. Por favor, faça login novamente.", status_code=401, response_body=body)
+                else:
+                    self.auth_service.clear_token()
+                    raise ApiError("Credenciais inválidas.", status_code=401, response_body=body)
+                    
             logger.error(f"HTTPError {e.code} on {method} {url}: {body}")
             raise ApiError(f"HTTP Error {e.code}", status_code=e.code, response_body=body)
         except urllib.error.URLError as e:
             logger.error(f"URLError on {method} {url}: {e.reason}")
-            raise ApiError(f"Connection Error: {e.reason}")
+            raise ApiError(f"Não foi possível conectar ao servidor. Verifique sua conexão com a internet ou a URL da API: {e.reason}")
             
     def login(self, email: str, password: str) -> TokenResponse:
         """Login and save token. Does not return TokenResponse directly since auth_service handles it, but we can return it."""
@@ -200,8 +229,13 @@ class ApiClient:
         first_resp = self.sync_deck(deck_id, since_release, page=page, page_size=page_size)
         all_changes.extend(first_resp.changes)
         
-        total_pages = first_resp.pages or 1
-        while page < total_pages:
+        total_pages = first_resp.pages
+        if total_pages is None or not isinstance(total_pages, int) or total_pages < 1:
+            total_pages = 1
+            
+        # Avoid infinite loops by capping maximum pages
+        max_pages = min(total_pages, 1000)
+        while page < max_pages:
             page += 1
             next_resp = self.sync_deck(deck_id, since_release, page=page, page_size=page_size)
             all_changes.extend(next_resp.changes)
@@ -217,6 +251,12 @@ class ApiClient:
         """Fetch general status and minimum supported add-on version."""
         try:
             return self._request("GET", "/addon/status", require_auth=False)
+        except ApiError as e:
+            if e.status_code == 404:
+                logger.info("O endpoint opcional /addon/status retornou 404 (Não Encontrado). Ignorando verificação de versão do add-on.")
+            else:
+                logger.warning(f"Failed to fetch addon status: {e}")
+            return {}
         except Exception as e:
-            logger.error(f"Failed to fetch addon status: {e}")
+            logger.warning(f"Failed to fetch addon status: {e}")
             return {}

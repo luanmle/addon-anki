@@ -72,16 +72,27 @@ class DeckInstaller:
                         nt_name = nt_def["note_type"]
                         mapping = nt_def["field_mapping"]
                         
-                        note_id = self.note_manager.create_note(
-                            deck_id=anki_deck_id,
-                            note_type_name=nt_name,
-                            public_id=change.public_id,
-                            card_id=change.card_id,
-                            version_id=change.new_card_version_id,
-                            tags=change.tags,
-                            fields=change.fields,
-                            field_mapping=mapping
-                        )
+                        # Prevent duplication by checking if note already exists in Anki
+                        existing_note_id = self.note_manager.find_note_by_card_id(change.card_id)
+                        if existing_note_id:
+                            self.note_manager.update_note(
+                                anki_note_id=existing_note_id,
+                                version_id=change.new_card_version_id,
+                                fields=change.fields,
+                                field_mapping=mapping
+                            )
+                            note_id = existing_note_id
+                        else:
+                            note_id = self.note_manager.create_note(
+                                deck_id=anki_deck_id,
+                                note_type_name=nt_name,
+                                public_id=change.public_id,
+                                card_id=change.card_id,
+                                version_id=change.new_card_version_id,
+                                tags=change.tags,
+                                fields=change.fields,
+                                field_mapping=mapping
+                            )
                         
                         self.db.upsert_card(RemoteCard(
                             card_id=change.card_id,

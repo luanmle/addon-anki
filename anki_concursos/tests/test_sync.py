@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 
 from anki_concursos.sync.engine import SyncEngine
 from anki_concursos.storage.models import RemoteDeck, RemoteCard, SyncLogEntry
+from anki_concursos.api.client import ApiError
 
 class MockQueryOp:
     def __init__(self, parent, op, success):
@@ -34,6 +35,7 @@ def mock_sync_setup():
         
         api = MagicMock()
         db = MagicMock()
+        db.get_card.return_value = None
         
         # Mock status API
         api.get_addon_status.return_value = {"min_addon_version": "0.1.0"}
@@ -43,6 +45,7 @@ def mock_sync_setup():
         # Mock the managers to prevent accessing Anki/filesystem databases
         engine.nt_manager = MagicMock()
         engine.note_manager = MagicMock()
+        engine.note_manager.find_note_by_card_id.return_value = None
         engine.backup_manager = MagicMock()
         
         yield engine, api, db, mock_mw
@@ -167,10 +170,25 @@ def test_sync_apply_changes(mock_sync_setup):
     engine.note_manager.deprecate_note.assert_called_once_with(400)
     
     # Assertions on DB calls
-    db.upsert_card.assert_called()
-    db.update_card_status.assert_any_call("c_upd", "active", "v2")
-    db.update_card_status.assert_any_call("c_rem", "removed", "v2")
-    db.update_card_status.assert_any_call("c_dep", "deprecated", "v2")
+    assert db.upsert_card.call_count == 4
+    called_cards = [args[0][0] for args in db.upsert_card.call_args_list]
+    card_map = {c.card_id: c for c in called_cards}
+    
+    assert card_map["c_add"].status == "active"
+    assert card_map["c_add"].card_version_id == "v1"
+    assert card_map["c_add"].anki_note_id == 100
+    
+    assert card_map["c_upd"].status == "active"
+    assert card_map["c_upd"].card_version_id == "v2"
+    assert card_map["c_upd"].anki_note_id == 200
+    
+    assert card_map["c_rem"].status == "removed"
+    assert card_map["c_rem"].card_version_id == "v2"
+    assert card_map["c_rem"].anki_note_id == 300
+    
+    assert card_map["c_dep"].status == "deprecated"
+    assert card_map["c_dep"].card_version_id == "v2"
+    assert card_map["c_dep"].anki_note_id == 400
     
     db.upsert_deck.assert_called_once()
     db.add_sync_log.assert_called_once()
@@ -216,3 +234,87 @@ def test_sync_engine_rollback_on_error(mock_sync_setup):
     assert success is False
     assert "Rollback" in msg or "rolled back" in msg
     assert "Anki Database Lock Error" in msg
+
+
+def test_sync_status_404_success(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    
+    # Mock status endpoint returning empty dict (simulating handled 404)
+    api.get_addon_status.return_value = {}
+    
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {}
+    api.get_deck_manifest.return_value = manifest
+    
+    sync_resp = MagicMock()
+    sync_resp.has_changes = False
+    sync_resp.changes = []
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Should complete successfully
+    assert len(callback_called) == 1
+    assert callback_called[0] == (True, "Already up to date.")
+
+
+def test_sync_prevent_duplicate_by_card_id(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {
+            "note_type": "nt",
+            "fields": ["Front", "Back"],
+            "field_mapping": {"Front": "front_text", "Back": "back_text"}
+        }
+    }
+    api.get_deck_manifest.return_value = manifest
+    
+    # An "added" card from sync, but it already exists in Anki with note ID 500
+    c_added = MagicMock(action="added", card_kind="basic", card_id="c_dup_test", public_id="P_dup", new_card_version_id="v_new", tags=[], fields={"front_text": "Updated Front", "back_text": "Updated Back"})
+    sync_resp = MagicMock()
+    sync_resp.has_changes = True
+    sync_resp.changes = [c_added]
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    # Mock find_note_by_card_id to return the existing Anki note ID 500
+    engine.note_manager.find_note_by_card_id.return_value = 500
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Verify we did NOT call create_note, but called update_note on the existing note ID 500
+    engine.note_manager.create_note.assert_not_called()
+    engine.note_manager.update_note.assert_called_once_with(
+        anki_note_id=500,
+        version_id="v_new",
+        fields={"front_text": "Updated Front", "back_text": "Updated Back"},
+        field_mapping={"Front": "front_text", "Back": "back_text"}
+    )
+    
+    # Verify the local SQLite DB mapping is correctly established/saved
+    db.upsert_card.assert_called_once()
+    saved_card = db.upsert_card.call_args[0][0]
+    assert saved_card.card_id == "c_dup_test"
+    assert saved_card.anki_note_id == 500
+    assert saved_card.status == "active"
+    
+    assert callback_called == [(True, "Successfully synced 1 changes.")]

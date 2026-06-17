@@ -207,4 +207,56 @@ def test_api_client_url_resolution():
         mock_mw.addonManager.getConfig.return_value = {}
         client = ApiClient()
         assert client.base_url == "https://flashcards-stagging-d9c092f5d04d.herokuapp.com"
+        
+        # Scenario 4: api_environment set to production, api_url empty
+        mock_mw.addonManager.getConfig.return_value = {
+            "api_environment": "production",
+            "api_url": ""
+        }
+        client = ApiClient()
+        assert client.base_url == "https://api.ankiconcursos.com.br"
+
+
+def test_request_token_401_no_refresh_token(mock_auth):
+    auth_instance, tokens = mock_auth
+    client = ApiClient()
+    # Remove refresh token so we can't refresh
+    tokens.pop("refresh_token", None)
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = make_http_error(401, {"detail": "Token expired", "code": "token_expired"})
+        
+        with pytest.raises(ApiError) as exc_info:
+            client._request("GET", "/secure-data", require_auth=True)
+            
+        assert exc_info.value.status_code == 401
+        assert "access_token" not in tokens  # verify token was cleared
+        assert mock_urlopen.call_count == 1
+
+
+def test_sync_deck_all_pages_no_pages_field(mock_auth):
+    client = ApiClient()
+    # Response has pages=None
+    response_body = {
+        "deck_id": "d1", "from_release": 0, "to_release": 5, "has_changes": True,
+        "page": None, "pages": None, "total_changes": 1,
+        "changes": [
+            {"release_id": "r1", "release_number": 1, "published_at": "2026", "action": "added", "card_id": "c1", "public_id": "P1", "old_card_version_id": None, "new_card_version_id": "v1", "tags": []}
+        ]
+    }
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=response_body)
+        
+        res = client.sync_deck_all_pages("d1", since_release=0, page_size=100)
+        assert len(res.changes) == 1
+        assert res.changes[0].card_id == "c1"
+        assert mock_urlopen.call_count == 1  # only one request should be made
+
+
+def test_get_addon_status_404(mock_auth):
+    client = ApiClient()
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = make_http_error(404, {"detail": "Not Found"})
+        res = client.get_addon_status()
+        assert res == {}  # Should return empty dict on 404 instead of raising ApiError
 

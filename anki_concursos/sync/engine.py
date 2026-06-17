@@ -102,60 +102,84 @@ class SyncEngine:
         for change in sync_resp.changes:
             kind = change.card_kind or "basic"
             nt_def = manifest.supported_note_types.get(kind)
-            
-            if change.action == "added":
-                if not nt_def or not change.fields:
+            if not nt_def:
+                continue
+                
+            # Resolve existing card / note_id from SQLite or directly from Anki
+            card = self.db.get_card(change.card_id)
+            anki_note_id = card.anki_note_id if card else None
+            if not anki_note_id:
+                anki_note_id = self.note_manager.find_note_by_card_id(change.card_id)
+                
+            if change.action in ("added", "updated"):
+                if not change.fields:
                     continue
-                note_id = self.note_manager.create_note(
-                    deck_id=deck.anki_deck_id,
-                    note_type_name=nt_def["note_type"],
-                    public_id=change.public_id,
-                    card_id=change.card_id,
-                    version_id=change.new_card_version_id,
-                    tags=change.tags,
-                    fields=change.fields,
-                    field_mapping=nt_def["field_mapping"]
-                )
+                if anki_note_id:
+                    self.note_manager.update_note(
+                        anki_note_id=anki_note_id,
+                        version_id=change.new_card_version_id,
+                        fields=change.fields,
+                        field_mapping=nt_def["field_mapping"]
+                    )
+                    stats["updated" if change.action == "updated" else "added"] += 1
+                else:
+                    anki_note_id = self.note_manager.create_note(
+                        deck_id=deck.anki_deck_id,
+                        note_type_name=nt_def["note_type"],
+                        public_id=change.public_id,
+                        card_id=change.card_id,
+                        version_id=change.new_card_version_id,
+                        tags=change.tags,
+                        fields=change.fields,
+                        field_mapping=nt_def["field_mapping"]
+                    )
+                    stats["added" if change.action == "added" else "updated"] += 1
+                    
                 self.db.upsert_card(RemoteCard(
                     card_id=change.card_id,
                     public_id=change.public_id,
                     card_version_id=change.new_card_version_id,
                     deck_id=deck.deck_id,
-                    anki_note_id=note_id,
+                    anki_note_id=anki_note_id,
                     card_kind=kind,
                     content_hash=None,
                     status="active",
                     created_at=now,
                     updated_at=now
                 ))
-                stats["added"] += 1
                 
-            elif change.action == "updated":
-                if not nt_def or not change.fields:
-                    continue
-                card = self.db.get_card(change.card_id)
-                if card and card.anki_note_id:
-                    self.note_manager.update_note(
-                        anki_note_id=card.anki_note_id,
-                        version_id=change.new_card_version_id,
-                        fields=change.fields,
-                        field_mapping=nt_def["field_mapping"]
-                    )
-                    self.db.update_card_status(change.card_id, "active", change.new_card_version_id)
-                    stats["updated"] += 1
-                    
             elif change.action == "removed":
-                card = self.db.get_card(change.card_id)
-                if card and card.anki_note_id:
-                    self.note_manager.suspend_note(card.anki_note_id)
-                    self.db.update_card_status(change.card_id, "removed", change.new_card_version_id)
+                if anki_note_id:
+                    self.note_manager.suspend_note(anki_note_id)
+                    self.db.upsert_card(RemoteCard(
+                        card_id=change.card_id,
+                        public_id=change.public_id,
+                        card_version_id=change.new_card_version_id,
+                        deck_id=deck.deck_id,
+                        anki_note_id=anki_note_id,
+                        card_kind=kind,
+                        content_hash=None,
+                        status="removed",
+                        created_at=now,
+                        updated_at=now
+                    ))
                     stats["removed"] += 1
                     
             elif change.action == "deprecated":
-                card = self.db.get_card(change.card_id)
-                if card and card.anki_note_id:
-                    self.note_manager.deprecate_note(card.anki_note_id)
-                    self.db.update_card_status(change.card_id, "deprecated", change.new_card_version_id)
+                if anki_note_id:
+                    self.note_manager.deprecate_note(anki_note_id)
+                    self.db.upsert_card(RemoteCard(
+                        card_id=change.card_id,
+                        public_id=change.public_id,
+                        card_version_id=change.new_card_version_id,
+                        deck_id=deck.deck_id,
+                        anki_note_id=anki_note_id,
+                        card_kind=kind,
+                        content_hash=None,
+                        status="deprecated",
+                        created_at=now,
+                        updated_at=now
+                    ))
                     stats["deprecated"] += 1
 
         # Update deck release

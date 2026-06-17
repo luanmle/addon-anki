@@ -51,8 +51,13 @@ class SettingsDialog(QDialog):
         self.api_url_input = QLineEdit(self.display_url)
         form.addRow("API URL:", self.api_url_input)
         
+        self.effective_url_lbl = QLabel(self.display_url)
+        self.effective_url_lbl.setStyleSheet("font-weight: bold; color: gray;")
+        form.addRow("Effective URL:", self.effective_url_lbl)
+        
         # Connect change event
         self.env_cb.currentIndexChanged.connect(self.on_env_changed)
+        self.api_url_input.textChanged.connect(self.on_url_input_changed)
         
         self.auto_sync_cb = QCheckBox()
         self.auto_sync_cb.setChecked(self.config.get("auto_sync", False))
@@ -89,10 +94,17 @@ class SettingsDialog(QDialog):
         selected_env = self.env_cb.currentData()
         if selected_env == "custom":
             self.api_url_input.setEnabled(True)
+            self.effective_url_lbl.setText(self.api_url_input.text().strip())
         else:
             self.api_url_input.setEnabled(False)
             preset_url = API_ENVIRONMENTS.get(selected_env, "")
             self.api_url_input.setText(preset_url)
+            self.effective_url_lbl.setText(preset_url)
+            
+    def on_url_input_changed(self):
+        selected_env = self.env_cb.currentData()
+        if selected_env == "custom":
+            self.effective_url_lbl.setText(self.api_url_input.text().strip())
             
     def on_test(self):
         # Temporarily change API URL

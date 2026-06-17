@@ -5,6 +5,20 @@ from aqt import mw
 logger = logging.getLogger("anki_concursos.services.note")
 
 class NoteManager:
+    def find_note_by_card_id(self, card_id: str) -> Optional[int]:
+        """Search Anki collection for a note with the given Card ID."""
+        if not mw or not getattr(mw, "col", None):
+            return None
+        try:
+            safe_id = str(card_id).replace('"', '\\"')
+            query = f'"Card ID:{safe_id}"'
+            note_ids = mw.col.find_notes(query)
+            if note_ids and isinstance(note_ids, (list, tuple)):
+                return note_ids[0]
+        except Exception as e:
+            logger.error(f"Failed to find note by Card ID {card_id}: {e}")
+        return None
+
     def create_note(self, deck_id: int, note_type_name: str, public_id: str, card_id: str, version_id: Optional[str], tags: List[str], fields: Dict[str, str], field_mapping: Dict[str, str]) -> int:
         """Create a new note in Anki. Returns the new Anki Note ID."""
         notetype = mw.col.models.by_name(note_type_name)
