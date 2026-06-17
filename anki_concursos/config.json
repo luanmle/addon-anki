@@ -1,5 +1,7 @@
 {
-  "api_url": "http://localhost:8000",
+  "api_environment": "staging",
+  "api_url": "",
   "auto_sync": false,
   "log_level": "INFO"
 }
+

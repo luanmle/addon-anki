@@ -14,6 +14,8 @@ class TokenResponse:
     token_type: str
     expires_in: int
     user: UserResponse
+    refresh_token: Optional[str] = None
+
 
 @dataclass
 class SubscribableDeckResponse:
@@ -81,3 +83,7 @@ class AnkiDeckSyncResponse:
     to_release: int
     has_changes: bool
     changes: List[AnkiSyncChangeResponse]
+    page: Optional[int] = None
+    pages: Optional[int] = None
+    total_changes: Optional[int] = None
+

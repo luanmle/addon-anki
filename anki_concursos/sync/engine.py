@@ -30,11 +30,26 @@ class SyncEngine:
             return
             
         def background_job() -> List[dict]:
+            # 1. Check version compatibility first
+            status = self.api.get_addon_status()
+            min_ver = status.get("min_addon_version")
+            if min_ver:
+                from ..consts import VERSION
+                try:
+                    curr_parts = [int(p) for p in VERSION.split(".")]
+                    req_parts = [int(p) for p in min_ver.split(".")]
+                    if curr_parts < req_parts:
+                        raise ValueError(f"Sua versão do add-on ({VERSION}) é obsoleta. A versão mínima suportada é {min_ver}. Por favor, atualize o add-on.")
+                except ValueError as ve:
+                    raise ve
+                except Exception:
+                    pass # Ignore parsing errors of unexpected version formats
+            
             # Fetch updates for all decks
             results = []
             for deck in decks:
                 manifest = self.api.get_deck_manifest(deck.deck_id)
-                sync_resp = self.api.sync_deck(deck.deck_id, since_release=deck.latest_release)
+                sync_resp = self.api.sync_deck_all_pages(deck.deck_id, since_release=deck.latest_release)
                 results.append({"deck": deck, "manifest": manifest, "sync": sync_resp})
             return results
             
@@ -71,6 +86,7 @@ class SyncEngine:
             op=lambda _: background_job(),
             success=on_success
         )
+        op.failure(lambda exc: callback(False, str(exc)))
         op.with_progress("Checking for updates...").run_in_background()
 
     def _apply_deck_sync(self, deck: RemoteDeck, manifest, sync_resp) -> None:

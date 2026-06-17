@@ -1,6 +1,11 @@
 """Anki Concursos Add-on."""
 
-from . import bootstrap
+try:
+    import aqt
+    from . import bootstrap
+    # Register hooks and initialize the add-on
+    bootstrap.setup()
+except ImportError:
+    # Safely ignore if aqt is not installed (e.g. during unit testing)
+    pass
 
-# Register hooks and initialize the add-on
-bootstrap.setup()

@@ -35,6 +35,15 @@ class DatabaseManager:
             self._local.conn.execute("PRAGMA foreign_keys = ON;")
         return self._local.conn
 
+    def close(self) -> None:
+        if hasattr(self._local, "conn"):
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            delattr(self._local, "conn")
+
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Cursor, None, None]:
         conn = self._get_conn()

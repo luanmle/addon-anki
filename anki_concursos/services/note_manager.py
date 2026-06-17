@@ -22,6 +22,8 @@ class NoteManager:
         for f_name, json_key in field_mapping.items():
             if json_key in fields:
                 note[f_name] = fields[json_key]
+            elif f_name in fields:
+                note[f_name] = fields[f_name]
                 
         # Set tags
         for t in tags:
@@ -40,6 +42,8 @@ class NoteManager:
             for f_name, json_key in field_mapping.items():
                 if json_key in fields:
                     note[f_name] = fields[json_key]
+                elif f_name in fields:
+                    note[f_name] = fields[f_name]
                     
             mw.col.update_note(note)
         except Exception as e:

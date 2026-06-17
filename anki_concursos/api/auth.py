@@ -17,10 +17,13 @@ class AuthService:
             
         self.token_file.parent.mkdir(exist_ok=True, parents=True)
 
-    def save_token(self, access_token: str) -> None:
+    def save_token(self, access_token: str, refresh_token: Optional[str] = None) -> None:
         try:
+            data = {"access_token": access_token}
+            if refresh_token:
+                data["refresh_token"] = refresh_token
             with open(self.token_file, "w", encoding="utf-8") as f:
-                json.dump({"access_token": access_token}, f)
+                json.dump(data, f)
         except Exception as e:
             logger.error(f"Failed to save token: {e}")
 
@@ -34,6 +37,18 @@ class AuthService:
         except Exception as e:
             logger.error(f"Failed to read token: {e}")
             return None
+
+    def get_refresh_token(self) -> Optional[str]:
+        if not self.token_file.exists():
+            return None
+        try:
+            with open(self.token_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("refresh_token")
+        except Exception as e:
+            logger.error(f"Failed to read refresh token: {e}")
+            return None
+
 
     def clear_token(self) -> None:
         try:

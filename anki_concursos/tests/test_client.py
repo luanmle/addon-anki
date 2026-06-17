@@ -1,0 +1,189 @@
+import pytest
+import json
+import urllib.error
+from unittest.mock import patch, MagicMock
+
+from anki_concursos.api.client import ApiClient, ApiError
+from anki_concursos.api.models import TokenResponse, AnkiDeckSyncResponse, AnkiSyncChangeResponse
+
+def make_mock_response(status_code=200, body_dict=None):
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(body_dict or {}).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    return mock_resp
+
+def make_http_error(status_code, body_dict=None):
+    fp = MagicMock()
+    fp.read.return_value = json.dumps(body_dict or {}).encode("utf-8")
+    err = urllib.error.HTTPError("http://test", status_code, "HTTP Error", {}, fp)
+    return err
+
+@pytest.fixture
+def mock_auth():
+    with patch("anki_concursos.api.client.AuthService") as mock_class:
+        instance = mock_class.return_value
+        tokens = {"access_token": "valid_token", "refresh_token": "valid_refresh"}
+        
+        instance.get_token.side_effect = lambda: tokens.get("access_token")
+        instance.get_refresh_token.side_effect = lambda: tokens.get("refresh_token")
+        
+        def save_token(access, refresh=None):
+            tokens["access_token"] = access
+            if refresh:
+                tokens["refresh_token"] = refresh
+        instance.save_token.side_effect = save_token
+        
+        def clear_token():
+            tokens.clear()
+        instance.clear_token.side_effect = clear_token
+        
+        yield instance, tokens
+
+def test_api_error_parsing():
+    # Test message and code parsing from JSON error body
+    body = {"detail": "Chave expirada", "code": "token_expired"}
+    err = ApiError("Default Msg", status_code=400, response_body=json.dumps(body))
+    assert err.code == "token_expired"
+    assert str(err) == "Chave expirada"
+
+def test_request_success(mock_auth):
+    client = ApiClient()
+    mock_data = {"key": "value"}
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=mock_data)
+        
+        res = client._request("GET", "/test-endpoint", require_auth=True)
+        assert res == mock_data
+        
+        # Verify request parameters
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == f"{client.base_url}/test-endpoint"
+        assert req.headers.get("Authorization") == "Bearer valid_token"
+
+def test_login_saves_tokens(mock_auth):
+    auth_instance, tokens = mock_auth
+    client = ApiClient()
+    
+    login_response = {
+        "access_token": "new_access",
+        "refresh_token": "new_refresh",
+        "token_type": "bearer",
+        "expires_in": 3600,
+        "user": {
+            "user_id": "u1",
+            "email": "test@test.com",
+            "display_name": "Luan",
+            "role": "student"
+        }
+    }
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=login_response)
+        
+        res = client.login("test@test.com", "password")
+        
+        assert isinstance(res, TokenResponse)
+        assert res.access_token == "new_access"
+        assert res.refresh_token == "new_refresh"
+        assert tokens["access_token"] == "new_access"
+        assert tokens["refresh_token"] == "new_refresh"
+
+def test_request_token_refresh_on_401(mock_auth):
+    auth_instance, tokens = mock_auth
+    client = ApiClient()
+    
+    # Simulates first request failing with 401,
+    # refresh succeeding with new tokens,
+    # and second retry request succeeding.
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            make_http_error(401, {"detail": "Token expired", "code": "token_expired"}),  # First request fails
+            make_mock_response(body_dict={"access_token": "fresh_access", "refresh_token": "fresh_refresh"}),  # Refresh call succeeds
+            make_mock_response(body_dict={"data": "success"})  # Retry call succeeds
+        ]
+        
+        res = client._request("GET", "/secure-data", require_auth=True)
+        assert res == {"data": "success"}
+        assert tokens["access_token"] == "fresh_access"
+        assert tokens["refresh_token"] == "fresh_refresh"
+        assert mock_urlopen.call_count == 3
+
+def test_request_token_refresh_failure(mock_auth):
+    auth_instance, tokens = mock_auth
+    client = ApiClient()
+    
+    # First request fails with 401, refresh call fails with 401
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            make_http_error(401, {"detail": "Token expired", "code": "token_expired"}),
+            make_http_error(401, {"detail": "Refresh token expired", "code": "refresh_expired"})
+        ]
+        
+        with pytest.raises(ApiError) as exc_info:
+            client._request("GET", "/secure-data", require_auth=True)
+            
+        assert exc_info.value.status_code == 401
+        assert "access_token" not in tokens  # verify token was cleared
+        assert mock_urlopen.call_count == 2
+
+def test_sync_deck_passes_pagination(mock_auth):
+    client = ApiClient()
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict={
+            "deck_id": "d1",
+            "from_release": 0,
+            "to_release": 2,
+            "has_changes": True,
+            "changes": []
+        })
+        
+        client.sync_deck("d1", since_release=0, page=2, page_size=100)
+        
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert "page=2" in req.full_url
+        assert "page_size=100" in req.full_url
+
+def test_sync_deck_all_pages_concatenation(mock_auth):
+    client = ApiClient()
+    
+    page_1 = {
+        "deck_id": "d1", "from_release": 0, "to_release": 2, "has_changes": True,
+        "page": 1, "pages": 2, "total_changes": 2,
+        "changes": [
+            {"release_id": "r1", "release_number": 1, "published_at": "2026", "action": "added", "card_id": "c1", "public_id": "P1", "old_card_version_id": None, "new_card_version_id": "v1", "tags": []}
+        ]
+    }
+    page_2 = {
+        "deck_id": "d1", "from_release": 0, "to_release": 2, "has_changes": True,
+        "page": 2, "pages": 2, "total_changes": 2,
+        "changes": [
+            {"release_id": "r2", "release_number": 2, "published_at": "2026", "action": "added", "card_id": "c2", "public_id": "P2", "old_card_version_id": None, "new_card_version_id": "v1", "tags": []}
+        ]
+    }
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.side_effect = [
+            make_mock_response(body_dict=page_1),
+            make_mock_response(body_dict=page_2)
+        ]
+        
+        res = client.sync_deck_all_pages("d1", since_release=0, page_size=1)
+        assert len(res.changes) == 2
+        assert res.changes[0].card_id == "c1"
+        assert res.changes[1].card_id == "c2"
+        assert mock_urlopen.call_count == 2
+
+def test_get_addon_status(mock_auth):
+    client = ApiClient()
+    status_response = {
+        "api_version": "1",
+        "min_addon_version": "0.1.0",
+        "supported_note_types": ["basic", "cloze"]
+    }
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=status_response)
+        res = client.get_addon_status()
+        assert res == status_response

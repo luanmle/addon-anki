@@ -30,7 +30,7 @@ class DeckInstaller:
             manifest = self.api.get_deck_manifest(deck_id)
             
             # 2. Get full sync snapshot
-            sync_resp = self.api.sync_deck(deck_id, since_release=0)
+            sync_resp = self.api.sync_deck_all_pages(deck_id, since_release=0)
             
             return {"manifest": manifest, "sync": sync_resp}
             
@@ -126,4 +126,6 @@ class DeckInstaller:
             op=lambda _: background_job(),
             success=on_success
         )
+        op.failure(lambda exc: callback(False, str(exc)))
         op.with_progress("Fetching deck data from server...").run_in_background()
+
