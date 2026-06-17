@@ -260,3 +260,28 @@ def test_get_addon_status_404(mock_auth):
         res = client.get_addon_status()
         assert res == {}  # Should return empty dict on 404 instead of raising ApiError
 
+
+def test_parse_dataclass_filters_extra_keys():
+    from anki_concursos.api.client import parse_dataclass
+    from anki_concursos.api.models import UserResponse
+    
+    # Simulates JSON response from server containing undocumented 'is_active' and 'created_at' fields
+    payload = {
+        "user_id": "u1",
+        "email": "test@test.com",
+        "display_name": "Luan",
+        "role": "student",
+        "is_active": True,
+        "created_at": "2026-06-16T22:00:00"
+    }
+    
+    # It should not fail with TypeError: got an unexpected keyword argument
+    user = parse_dataclass(UserResponse, payload)
+    assert isinstance(user, UserResponse)
+    assert user.user_id == "u1"
+    assert user.email == "test@test.com"
+    assert user.display_name == "Luan"
+    assert user.role == "student"
+    assert not hasattr(user, "is_active")
+    assert not hasattr(user, "created_at")
+

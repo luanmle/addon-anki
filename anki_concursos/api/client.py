@@ -3,6 +3,7 @@ import logging
 import urllib.request
 import urllib.error
 import urllib.parse
+import dataclasses
 from typing import Dict, Any, Optional
 
 from aqt import mw
@@ -48,6 +49,14 @@ class ApiError(Exception):
             message = "Não foi possível conectar ao servidor. Verifique sua conexão com a internet ou a URL da API."
             
         super().__init__(message)
+
+
+def parse_dataclass(cls, data: dict):
+    if not isinstance(data, dict):
+        return data
+    class_fields = {f.name for f in dataclasses.fields(cls)}
+    filtered = {k: v for k, v in data.items() if k in class_fields}
+    return cls(**filtered)
 
 
 class ApiClient:
@@ -148,11 +157,12 @@ class ApiClient:
         data = {"email": email, "password": password}
         resp = self._request("POST", "/auth/token", data=data, require_auth=False)
         self.auth_service.save_token(resp["access_token"], resp.get("refresh_token"))
+        user_data = parse_dataclass(UserResponse, resp["user"]) if "user" in resp else None
         return TokenResponse(
             access_token=resp["access_token"],
             token_type=resp["token_type"],
             expires_in=resp["expires_in"],
-            user=UserResponse(**resp["user"]),
+            user=user_data,
             refresh_token=resp.get("refresh_token")
         )
 
@@ -173,11 +183,11 @@ class ApiClient:
         
     def get_current_user(self) -> UserResponse:
         resp = self._request("GET", "/auth/me")
-        return UserResponse(**resp)
+        return parse_dataclass(UserResponse, resp)
         
     def list_subscribable_decks(self, page: int = 1, page_size: int = 50) -> SubscribableDeckListResponse:
         resp = self._request("GET", f"/subscriptions/decks?page={page}&page_size={page_size}")
-        items = [SubscribableDeckResponse(**item) for item in resp.get("items", [])]
+        items = [parse_dataclass(SubscribableDeckResponse, item) for item in resp.get("items", [])]
         return SubscribableDeckListResponse(
             items=items,
             page=resp["page"],
@@ -188,20 +198,20 @@ class ApiClient:
         
     def list_subscriptions(self) -> DeckSubscriptionListResponse:
         resp = self._request("GET", "/subscriptions")
-        items = [DeckSubscriptionResponse(**item) for item in resp.get("items", [])]
+        items = [parse_dataclass(DeckSubscriptionResponse, item) for item in resp.get("items", [])]
         return DeckSubscriptionListResponse(items=items, total=resp["total"])
         
     def subscribe(self, deck_id: str) -> DeckSubscriptionResponse:
         resp = self._request("POST", f"/subscriptions/{deck_id}")
-        return DeckSubscriptionResponse(**resp)
+        return parse_dataclass(DeckSubscriptionResponse, resp)
         
     def unsubscribe(self, deck_id: str) -> DeckSubscriptionResponse:
         resp = self._request("POST", f"/subscriptions/{deck_id}/cancel")
-        return DeckSubscriptionResponse(**resp)
+        return parse_dataclass(DeckSubscriptionResponse, resp)
         
     def get_deck_manifest(self, deck_id: str) -> AnkiDeckManifestResponse:
         resp = self._request("GET", f"/addon/decks/{deck_id}/manifest")
-        return AnkiDeckManifestResponse(**resp)
+        return parse_dataclass(AnkiDeckManifestResponse, resp)
         
     def sync_deck(self, deck_id: str, since_release: int, page: Optional[int] = None, page_size: Optional[int] = None) -> AnkiDeckSyncResponse:
         url = f"/addon/decks/{deck_id}/sync?since_release={since_release}"
@@ -211,7 +221,7 @@ class ApiClient:
             url += f"&page_size={page_size}"
             
         resp = self._request("GET", url)
-        changes = [AnkiSyncChangeResponse(**c) for c in resp.get("changes", [])]
+        changes = [parse_dataclass(AnkiSyncChangeResponse, c) for c in resp.get("changes", [])]
         return AnkiDeckSyncResponse(
             deck_id=resp["deck_id"],
             from_release=resp["from_release"],
