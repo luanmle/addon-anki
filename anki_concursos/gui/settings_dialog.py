@@ -1,3 +1,5 @@
+import json
+
 from aqt import mw
 from aqt.qt import *
 from ..api.client import ApiClient
@@ -67,6 +69,16 @@ class SettingsDialog(QDialog):
         self.log_level_cb.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self.log_level_cb.setCurrentText(self.config.get("log_level", "INFO"))
         form.addRow("Log Level:", self.log_level_cb)
+
+        self.upload_mappings_edit = QPlainTextEdit()
+        self.upload_mappings_edit.setMinimumHeight(180)
+        self.upload_mappings_edit.setPlaceholderText(
+            '{\n  "Anki Concursos Basic": {\n    "Front": "front_text",\n    "Back": "back_text"\n  }\n}'
+        )
+        self.upload_mappings_edit.setPlainText(
+            json.dumps(self.config.get("upload_field_mappings", {}), indent=2, ensure_ascii=False)
+        )
+        form.addRow("Upload field mappings (JSON):", self.upload_mappings_edit)
         
         layout.addLayout(form)
         
@@ -146,6 +158,21 @@ class SettingsDialog(QDialog):
             
         self.config["auto_sync"] = self.auto_sync_cb.isChecked()
         self.config["log_level"] = self.log_level_cb.currentText()
+
+        raw_upload_mappings = self.upload_mappings_edit.toPlainText().strip()
+        if raw_upload_mappings:
+            try:
+                self.config["upload_field_mappings"] = json.loads(raw_upload_mappings)
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "Invalid mapping JSON",
+                    f"Upload field mappings JSON is invalid: {exc}",
+                )
+                return
+        else:
+            self.config["upload_field_mappings"] = {}
+
         mw.addonManager.writeConfig(self.addon_folder, self.config)
         
         # Update active client base_url
