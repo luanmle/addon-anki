@@ -112,3 +112,47 @@ def test_export_deck_cloze_validation_failure(mock_mw):
         exporter.export_deck(1)
         
     assert "não contém a marcação de lacuna necessária" in str(exc_info.value)
+
+
+@patch("anki_concursos.services.deck_exporter.mw")
+def test_export_deck_cloze_multi_field_mapping(mock_mw):
+    exporter = DeckExporter()
+    mock_mw.col.decks.get.return_value = {"name": "Getting Started"}
+    mock_mw.col.find_notes.return_value = [1003]
+    
+    mock_note = MagicMock()
+    mock_note.tags = ["getting_started"]
+    
+    # Lesson is first but Cloze has the markup
+    mock_note.__getitem__.side_effect = lambda key: {
+        "Lesson": "In Anki, we add and edit notes rather than cards...",
+        "Cloze": "Anki will create {{c1::two::#}} cards from the note above.",
+        "Extra": "Extra info",
+        "Deep Dive": "Deep dive link",
+        "ankihub_id": "ah-1"
+    }.get(key)
+    
+    mock_model = {
+        "name": "Getting Started Cloze",
+        "type": 1, # Cloze
+        "flds": [
+            {"name": "Lesson"}, {"name": "Cloze"}, {"name": "Extra"}, 
+            {"name": "Deep Dive"}, {"name": "ankihub_id"}
+        ],
+        "tmpls": [{"name": "Cloze", "qfmt": "{{cloze:Cloze}}", "afmt": "{{cloze:Cloze}}"}],
+        "css": ""
+    }
+    mock_note.model.return_value = mock_model
+    mock_mw.col.get_note.return_value = mock_note
+    
+    payload = exporter.export_deck(1)
+    
+    # Assert Cloze mapped to front_text, Extra to back_text
+    assert payload["deck_name"] == "Getting Started"
+    assert len(payload["templates"]) == 1
+    assert payload["templates"][0]["field_mapping"]["Cloze"] == "front_text"
+    assert payload["templates"][0]["field_mapping"]["Extra"] == "back_text"
+    
+    # Assert fields parsed
+    assert payload["notes"][0]["fields"]["Lesson"] == "In Anki, we add and edit notes rather than cards..."
+    assert payload["notes"][0]["fields"]["Cloze"] == "Anki will create {{c1::two::#}} cards from the note above."

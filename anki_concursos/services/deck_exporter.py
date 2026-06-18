@@ -40,8 +40,8 @@ class DeckExporter:
             # 1. Get filtered fields list
             fields_list = [f["name"] for f in notetype["flds"] if f["name"] not in metadata_fields]
             
-            # Resolve field mapping
-            field_mapping = self._resolve_field_mapping(fields_list, card_kind)
+            # Resolve field mapping (passing the note instance for Cloze inspection if needed)
+            field_mapping = self._resolve_field_mapping(fields_list, card_kind, note)
             
             # Check fields validation
             mapped_values = set(field_mapping.values())
@@ -55,20 +55,14 @@ class DeckExporter:
             for f_name in fields_list:
                 note_fields[f_name] = note[f_name]
                 
-            # Validate Cloze markup if needed
+            # Validate Cloze markup exists anywhere in the fields
             if card_kind == "cloze":
-                front_field = None
-                for f, canonical in field_mapping.items():
-                    if canonical == "front_text":
-                        front_field = f
-                        break
-                if front_field:
-                    text_val = note_fields.get(front_field, "")
-                    if not cloze_pattern.search(text_val):
-                        raise ValueError(
-                            f"A nota de omissão (cloze) ID {note_id} no campo '{front_field}' "
-                            f"não contém a marcação de lacuna necessária (ex: {{{{c1::texto}}}})."
-                        )
+                all_content = " ".join(note_fields.values())
+                if not cloze_pattern.search(all_content):
+                    raise ValueError(
+                        f"A nota de omissão (cloze) ID {note_id} não contém a marcação de lacuna "
+                        f"necessária (ex: {{{{c1::texto}}}}) em nenhum de seus campos."
+                    )
             
             # 3. Add to templates list if not already there
             tmpls = notetype.get("tmpls", [])
@@ -109,15 +103,27 @@ class DeckExporter:
             "notes": notes_payload
         }
         
-    def _resolve_field_mapping(self, fields: List[str], card_kind: str) -> Dict[str, str]:
+    def _resolve_field_mapping(self, fields: List[str], card_kind: str, note: Any = None) -> Dict[str, str]:
         mapping = {}
         f_lower = {f.lower(): f for f in fields}
         
         if card_kind == "cloze":
-            if "text" in f_lower:
+            # Priority 1: Explicit field name mapping
+            if "cloze" in f_lower:
+                mapping[f_lower["cloze"]] = "front_text"
+            elif "text" in f_lower:
                 mapping[f_lower["text"]] = "front_text"
             elif "texto" in f_lower:
                 mapping[f_lower["texto"]] = "front_text"
+            # Priority 2: Scan the fields of the note to find which one has the cloze markup
+            elif note:
+                cloze_pattern = re.compile(r"\{\{c\d+::.*?\}\}")
+                for f in fields:
+                    if f in note:
+                        val = note[f]
+                        if cloze_pattern.search(val):
+                            mapping[f] = "front_text"
+                            break
                 
             if "extra" in f_lower:
                 mapping[f_lower["extra"]] = "back_text"
