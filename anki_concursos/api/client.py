@@ -270,3 +270,7 @@ class ApiClient:
         except Exception as e:
             logger.warning(f"Failed to fetch addon status: {e}")
             return {}
+
+    def upload_deck(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Upload a complete deck to the platform."""
+        return self._request("POST", "/addon/decks/upload", data=payload, require_auth=True)

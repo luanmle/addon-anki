@@ -33,6 +33,10 @@ def setup_menu() -> None:
     a_status.triggered.connect(on_status)
     menu.addAction(a_status)
     
+    a_upload = QAction("Upload Deck", mw)
+    a_upload.triggered.connect(on_upload_deck)
+    menu.addAction(a_upload)
+    
     menu.addSeparator()
     
     a_login = QAction("Login / Logout", mw)
@@ -62,6 +66,11 @@ def on_browse_decks() -> None:
 def on_status() -> None:
     from .status_dialog import StatusDialog
     dlg = StatusDialog(mw.anki_concursos_db, mw)
+    dlg.exec()
+
+def on_upload_deck() -> None:
+    from .upload_dialog import UploadDialog
+    dlg = UploadDialog(mw.anki_concursos_api, mw)
     dlg.exec()
 
 def on_login() -> None:

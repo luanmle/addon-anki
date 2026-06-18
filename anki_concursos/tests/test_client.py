@@ -285,3 +285,38 @@ def test_parse_dataclass_filters_extra_keys():
     assert not hasattr(user, "is_active")
     assert not hasattr(user, "created_at")
 
+
+def test_upload_deck_success(mock_auth):
+    client = ApiClient()
+    mock_resp_body = {
+        "deck_id": "d1-uuid",
+        "deck_name": "Test Deck",
+        "snapshot_id": "snap-uuid",
+        "published": True,
+        "total_notes": 1,
+        "created_cards": 1,
+        "reused_cards": 0,
+        "items": []
+    }
+    
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=mock_resp_body)
+        
+        payload = {
+            "deck_name": "Test Deck",
+            "description": "A deck",
+            "source_name": "addon",
+            "publish_release": True,
+            "templates": [],
+            "notes": []
+        }
+        
+        res = client.upload_deck(payload)
+        
+        assert res == mock_resp_body
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.method == "POST"
+        assert "/addon/decks/upload" in req.full_url
+        assert req.headers.get("Authorization") == "Bearer valid_token"
+
