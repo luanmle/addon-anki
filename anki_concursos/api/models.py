@@ -59,7 +59,8 @@ class AnkiDeckManifestResponse:
     fields: List[str]
     field_mapping: Dict[str, str]
     supported_note_types: Dict[str, Any]
-    tags: List[str]
+    tags: List[str] = field(default_factory=list)
+    templates: List[Dict[str, Any]] = field(default_factory=list)
 
 @dataclass
 class AnkiSyncChangeResponse:
@@ -73,7 +74,12 @@ class AnkiSyncChangeResponse:
     new_card_version_id: Optional[str]
     card_kind: Optional[str] = None
     note_type: Optional[str] = None
+    template_name: Optional[str] = None
     fields: Optional[Dict[str, str]] = None
+    template: Optional[Dict[str, Any]] = None
+    source_note_id: Optional[str] = None
+    source_note_guid: Optional[str] = None
+    source_deck_path: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
 @dataclass
@@ -86,4 +92,15 @@ class AnkiDeckSyncResponse:
     page: Optional[int] = None
     pages: Optional[int] = None
     total_changes: Optional[int] = None
+
+@dataclass
+class AnkiDeckTemplateResponse:
+    template_name: str
+    note_type: str
+    card_kind: str
+    fields: List[str]
+    field_mapping: Dict[str, str]
+    front_html: str
+    back_html: str
+    styling_css: str = ""
 

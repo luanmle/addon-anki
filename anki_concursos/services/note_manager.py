@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from aqt import mw
 
 logger = logging.getLogger("anki_concursos.services.note")
@@ -19,7 +19,7 @@ class NoteManager:
             logger.error(f"Failed to find note by Card ID {card_id}: {e}")
         return None
 
-    def create_note(self, deck_id: int, note_type_name: str, public_id: str, card_id: str, version_id: Optional[str], tags: List[str], fields: Dict[str, str], field_mapping: Dict[str, str]) -> int:
+    def create_note(self, deck_id: int, note_type_name: str, public_id: str, card_id: str, version_id: Optional[str], tags: List[str], fields: Dict[str, str], field_mapping: Optional[Dict[str, str]] = None) -> int:
         """Create a new note in Anki. Returns the new Anki Note ID."""
         notetype = mw.col.models.by_name(note_type_name)
         if not notetype:
@@ -32,12 +32,7 @@ class NoteManager:
         note["Card ID"] = card_id
         note["Version ID"] = version_id or ""
         
-        # Set content fields based on mapping
-        for f_name, json_key in field_mapping.items():
-            if json_key in fields:
-                note[f_name] = fields[json_key]
-            elif f_name in fields:
-                note[f_name] = fields[f_name]
+        self._apply_fields(note, fields, field_mapping)
                 
         # Set tags
         for t in tags:
@@ -46,22 +41,33 @@ class NoteManager:
         mw.col.add_note(note, deck_id)
         return note.id
 
-    def update_note(self, anki_note_id: int, version_id: Optional[str], fields: Dict[str, str], field_mapping: Dict[str, str]) -> None:
+    def update_note(self, anki_note_id: int, version_id: Optional[str], fields: Dict[str, str], field_mapping: Optional[Dict[str, str]] = None) -> None:
         """Update an existing note's content without deleting it."""
         try:
             note = mw.col.get_note(anki_note_id)
             
             note["Version ID"] = version_id or ""
             
+            self._apply_fields(note, fields, field_mapping)
+                    
+            mw.col.update_note(note)
+        except Exception as e:
+            logger.error(f"Failed to update note {anki_note_id}: {e}")
+
+    def _apply_fields(self, note: Any, fields: Dict[str, str], field_mapping: Optional[Dict[str, str]]) -> None:
+        if field_mapping:
             for f_name, json_key in field_mapping.items():
                 if json_key in fields:
                     note[f_name] = fields[json_key]
                 elif f_name in fields:
                     note[f_name] = fields[f_name]
-                    
-            mw.col.update_note(note)
-        except Exception as e:
-            logger.error(f"Failed to update note {anki_note_id}: {e}")
+            return
+
+        for field_name, value in fields.items():
+            try:
+                note[field_name] = value
+            except Exception:
+                continue
 
     def suspend_note(self, anki_note_id: int) -> None:
         """Suspend all cards of a note."""

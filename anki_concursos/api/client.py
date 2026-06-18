@@ -13,7 +13,7 @@ from .models import (
     UserResponse, TokenResponse, SubscribableDeckResponse, 
     SubscribableDeckListResponse, DeckSubscriptionResponse, 
     DeckSubscriptionListResponse, AnkiDeckManifestResponse, 
-    AnkiSyncChangeResponse, AnkiDeckSyncResponse
+    AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse
 )
 from ..consts import DEFAULT_API_URL, API_ENVIRONMENTS, DEFAULT_API_ENVIRONMENT, VERSION
 
@@ -211,7 +211,10 @@ class ApiClient:
         
     def get_deck_manifest(self, deck_id: str) -> AnkiDeckManifestResponse:
         resp = self._request("GET", f"/addon/decks/{deck_id}/manifest")
-        return parse_dataclass(AnkiDeckManifestResponse, resp)
+        templates = [parse_dataclass(AnkiDeckTemplateResponse, t) for t in resp.get("templates", [])]
+        manifest = parse_dataclass(AnkiDeckManifestResponse, resp)
+        manifest.templates = templates  # type: ignore[attr-defined]
+        return manifest
         
     def sync_deck(self, deck_id: str, since_release: int, page: Optional[int] = None, page_size: Optional[int] = None) -> AnkiDeckSyncResponse:
         url = f"/addon/decks/{deck_id}/sync?since_release={since_release}"

@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from typing import List
 
 from aqt import mw
@@ -9,7 +10,32 @@ logger = logging.getLogger("anki_concursos.services.notetype")
 class NoteTypeManager:
     def ensure_note_type(self, manifest) -> None:
         """Ensure note types defined in the manifest exist in Anki."""
-        # The manifest has supported_note_types: Dict[str, Dict]
+        template_groups = defaultdict(set)
+        if getattr(manifest, "templates", None):
+            for template in manifest.templates:
+                nt_name = template.get("note_type")
+                if not nt_name:
+                    continue
+                for field_name in template.get("fields", []):
+                    if field_name:
+                        template_groups[nt_name].add(field_name)
+
+        if template_groups:
+            for nt_name, fields in template_groups.items():
+                existing = mw.col.models.by_name(nt_name)
+                field_list = sorted(fields, key=str.lower)
+                if existing:
+                    self._verify_fields(existing, field_list)
+                    continue
+                kind = "cloze" if any(
+                    (template.get("card_kind") == "cloze")
+                    for template in getattr(manifest, "templates", [])
+                    if template.get("note_type") == nt_name
+                ) else "basic"
+                self._create_note_type(nt_name, kind, field_list)
+            return
+
+        # Fallback for legacy manifests
         for kind, nt_def in manifest.supported_note_types.items():
             nt_name = nt_def["note_type"]
             fields = nt_def["fields"]

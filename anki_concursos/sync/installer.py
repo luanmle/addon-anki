@@ -65,12 +65,16 @@ class DeckInstaller:
                 for change in sync_resp.changes:
                     if change.action == "added" and change.fields:
                         kind = change.card_kind or "basic"
-                        nt_def = manifest.supported_note_types.get(kind)
-                        if not nt_def:
+                        template = change.template if isinstance(change.template, dict) else None
+                        note_type_name = (
+                            change.note_type
+                            if isinstance(getattr(change, "note_type", None), str)
+                            else None
+                        ) or manifest.supported_note_types.get(kind, {}).get("note_type")
+                        if not note_type_name:
                             continue
                             
-                        nt_name = nt_def["note_type"]
-                        mapping = nt_def["field_mapping"]
+                        use_native_fields = bool(template and change.fields)
                         
                         # Prevent duplication by checking if note already exists in Anki
                         existing_note_id = self.note_manager.find_note_by_card_id(change.card_id)
@@ -79,19 +83,19 @@ class DeckInstaller:
                                 anki_note_id=existing_note_id,
                                 version_id=change.new_card_version_id,
                                 fields=change.fields,
-                                field_mapping=mapping
+                                field_mapping=None if use_native_fields else manifest.supported_note_types.get(kind, {}).get("field_mapping")
                             )
                             note_id = existing_note_id
                         else:
                             note_id = self.note_manager.create_note(
                                 deck_id=anki_deck_id,
-                                note_type_name=nt_name,
+                                note_type_name=note_type_name,
                                 public_id=change.public_id,
                                 card_id=change.card_id,
                                 version_id=change.new_card_version_id,
                                 tags=change.tags,
                                 fields=change.fields,
-                                field_mapping=mapping
+                                field_mapping=None if use_native_fields else manifest.supported_note_types.get(kind, {}).get("field_mapping")
                             )
                         
                         self.db.upsert_card(RemoteCard(

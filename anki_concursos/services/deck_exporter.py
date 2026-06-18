@@ -51,10 +51,16 @@ class DeckExporter:
                 if f["name"] not in metadata_fields
             ]
             note_fields = {field_name: note[field_name] for field_name in fields_list}
+            tmpls = notetype.get("tmpls", [])
+            if not tmpls:
+                raise ValueError(
+                    f"O modelo de nota '{note_type_name}' não possui nenhum template de cartão definido."
+                )
             field_mapping = self._resolve_field_mapping(
                 note_type_name=note_type_name,
                 note_fields=note_fields,
                 upload_mappings=upload_mappings,
+                templates=tmpls,
             )
             self._validate_mapping(
                 note_id=note_id,
@@ -65,11 +71,9 @@ class DeckExporter:
                 cloze_pattern=cloze_pattern,
             )
 
-            tmpls = notetype.get("tmpls", [])
-            if not tmpls:
-                raise ValueError(
-                    f"O modelo de nota '{note_type_name}' não possui nenhum template de cartão definido."
-                )
+            source_note_id = str(getattr(note, "id", note_id))
+            source_note_guid = getattr(note, "guid", None)
+            source_deck_path = deck_name
 
             for tmpl in tmpls:
                 tmpl_name = tmpl["name"]
@@ -85,15 +89,18 @@ class DeckExporter:
                         "back_html": tmpl["afmt"],
                         "styling_css": notetype.get("css", ""),
                     }
-
-            notes_payload.append(
-                {
-                    "note_type": note_type_name,
-                    "card_kind": card_kind,
-                    "fields": note_fields,
-                    "tags": list(note.tags),
-                }
-            )
+                notes_payload.append(
+                    {
+                        "note_type": note_type_name,
+                        "template_name": tmpl_name,
+                        "card_kind": card_kind,
+                        "source_note_id": source_note_id,
+                        "source_note_guid": source_note_guid,
+                        "source_deck_path": source_deck_path,
+                        "fields": note_fields,
+                        "tags": list(note.tags),
+                    }
+                )
 
         return {
             "deck_name": deck_name,
@@ -132,18 +139,53 @@ class DeckExporter:
             }
         return normalized
 
+    @staticmethod
+    def _normalize_note_type_name(name: str) -> str:
+        cleaned = re.sub(r"\s*\([^)]*\)\s*$", "", name or "")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.lower()
+
+    def _find_upload_mapping(
+        self,
+        note_type_name: str,
+        upload_mappings: Dict[str, Dict[str, str]],
+    ) -> Dict[str, str] | None:
+        if not note_type_name:
+            return None
+
+        normalized_note_type = self._normalize_note_type_name(note_type_name)
+        if normalized_note_type in upload_mappings:
+            return upload_mappings[normalized_note_type]
+
+        exact_lower = note_type_name.strip().lower()
+        if exact_lower in upload_mappings:
+            return upload_mappings[exact_lower]
+
+        for key, mapping in upload_mappings.items():
+            normalized_key = self._normalize_note_type_name(key)
+            if normalized_key == normalized_note_type:
+                return mapping
+
+        for key, mapping in upload_mappings.items():
+            normalized_key = self._normalize_note_type_name(key)
+            if normalized_note_type.startswith(normalized_key) or normalized_key.startswith(normalized_note_type):
+                return mapping
+
+        return None
+
     def _resolve_field_mapping(
         self,
         *,
         note_type_name: str,
         note_fields: Dict[str, str],
         upload_mappings: Dict[str, Dict[str, str]],
+        templates: list[Dict[str, Any]],
     ) -> Dict[str, str]:
-        mapping = upload_mappings.get(note_type_name.lower())
+        mapping = self._find_upload_mapping(note_type_name, upload_mappings)
         if mapping is None:
-            raise ValueError(
-                f"Não há mapeamento explícito para o note type '{note_type_name}'. "
-                "Adicione upload_field_mappings no config.json do add-on."
+            mapping = self._derive_field_mapping_from_templates(
+                templates=templates,
+                note_fields=note_fields,
             )
 
         resolved: Dict[str, str] = {}
@@ -161,7 +203,60 @@ class DeckExporter:
                 )
             resolved[matching_source] = target_field
 
+        if "front_text" not in set(resolved.values()):
+            raise ValueError(
+                f"Não foi possível determinar um campo para 'front_text' no note type '{note_type_name}'. "
+                "Defina upload_field_mappings ou ajuste o template do Anki."
+            )
+
         return resolved
+
+    def _derive_field_mapping_from_templates(
+        self,
+        *,
+        templates: list[Dict[str, Any]],
+        note_fields: Dict[str, str],
+    ) -> Dict[str, str]:
+        ordered_sources: list[str] = []
+        seen: set[str] = set()
+
+        for template in templates:
+            for html_key in ("qfmt", "afmt"):
+                for source in self._extract_template_sources(template.get(html_key, "")):
+                    matched = self._find_source_field(source, note_fields)
+                    if matched and matched not in seen:
+                        seen.add(matched)
+                        ordered_sources.append(matched)
+
+        if not ordered_sources:
+            ordered_sources = [
+                field_name
+                for field_name, value in note_fields.items()
+                if isinstance(value, str) and value.strip()
+            ]
+
+        mapping: Dict[str, str] = {}
+        targets = ["front_text", "back_text", "answer_text", "explanation_text"]
+        for source, target in zip(ordered_sources, targets, strict=False):
+            mapping[source] = target
+        return mapping
+
+    @staticmethod
+    def _extract_template_sources(template_html: str) -> list[str]:
+        sources: list[str] = []
+        if not template_html:
+            return sources
+
+        pattern = re.compile(r"\{\{\s*(?:cloze:)?([^{}|}]+?)\s*\}\}", re.IGNORECASE)
+        for match in pattern.finditer(template_html):
+            raw_source = match.group(1).strip()
+            if not raw_source:
+                continue
+            if raw_source.lower() in {"frontside"}:
+                continue
+            if raw_source not in sources:
+                sources.append(raw_source)
+        return sources
 
     @staticmethod
     def _find_source_field(source_field: str, note_fields: Dict[str, str]) -> str | None:

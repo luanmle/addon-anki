@@ -67,6 +67,45 @@ def test_export_deck_uses_explicit_basic_mapping(mock_mw):
 
 
 @patch("anki_concursos.services.deck_exporter.mw")
+def test_export_deck_matches_note_type_base_name_with_suffix(mock_mw):
+    exporter = DeckExporter()
+    mock_mw.col.decks.get.return_value = {"name": "Getting Started"}
+    mock_mw.col.find_notes.return_value = [1006]
+    mock_mw.addonManager.getConfig.return_value = {
+        "upload_field_mappings": {
+            "Getting Started Basic": {
+                "Lesson": "front_text",
+                "Extra": "back_text",
+            }
+        }
+    }
+
+    mock_note = _make_mock_note(
+        {
+            "Lesson": "In Anki, we add and edit notes rather than cards...",
+            "Extra": "Extra info",
+        }
+    )
+    mock_note.model.return_value = {
+        "name": "Getting Started Basic (Getting Started with Anki / andrew)",
+        "type": 0,
+        "flds": [{"name": "Lesson"}, {"name": "Extra"}],
+        "tmpls": [{"name": "Card 1", "qfmt": "{{Lesson}}", "afmt": "{{Extra}}"}],
+        "css": "",
+    }
+    mock_mw.col.get_note.return_value = mock_note
+
+    payload = exporter.export_deck(1)
+
+    assert payload["templates"][0]["note_type"] == "Getting Started Basic (Getting Started with Anki / andrew)"
+    assert payload["templates"][0]["field_mapping"] == {
+        "Lesson": "front_text",
+        "Extra": "back_text",
+    }
+    assert payload["notes"][0]["fields"]["Lesson"] == "In Anki, we add and edit notes rather than cards..."
+
+
+@patch("anki_concursos.services.deck_exporter.mw")
 def test_export_deck_uses_explicit_cloze_mapping(mock_mw):
     exporter = DeckExporter()
     mock_mw.col.decks.get.return_value = {"name": "Getting Started"}
@@ -116,13 +155,18 @@ def test_export_deck_uses_explicit_cloze_mapping(mock_mw):
 
 
 @patch("anki_concursos.services.deck_exporter.mw")
-def test_export_deck_missing_mapping_fails(mock_mw):
+def test_export_deck_derives_mapping_from_templates_without_config(mock_mw):
     exporter = DeckExporter()
     mock_mw.col.decks.get.return_value = {"name": "Direito Constitucional"}
     mock_mw.col.find_notes.return_value = [1003]
-    mock_mw.addonManager.getConfig.return_value = {"upload_field_mappings": {}}
+    mock_mw.addonManager.getConfig.return_value = {}
 
-    mock_note = _make_mock_note({"Front": "Questão?", "Back": "Resposta."})
+    mock_note = _make_mock_note(
+        {
+            "Front": "Questão?",
+            "Back": "Resposta.",
+        }
+    )
     mock_note.model.return_value = {
         "name": "Anki Concursos Basic",
         "type": 0,
@@ -132,10 +176,13 @@ def test_export_deck_missing_mapping_fails(mock_mw):
     }
     mock_mw.col.get_note.return_value = mock_note
 
-    with pytest.raises(ValueError) as exc_info:
-        exporter.export_deck(1)
+    payload = exporter.export_deck(1)
 
-    assert "Não há mapeamento explícito" in str(exc_info.value)
+    assert payload["templates"][0]["field_mapping"] == {
+        "Front": "front_text",
+        "Back": "back_text",
+    }
+    assert payload["notes"][0]["fields"]["Front"] == "Questão?"
 
 
 @patch("anki_concursos.services.deck_exporter.mw")
@@ -164,4 +211,4 @@ def test_export_deck_requires_front_text_mapping(mock_mw):
     with pytest.raises(ValueError) as exc_info:
         exporter.export_deck(1)
 
-    assert "precisa mapear explicitamente um campo para 'front_text'" in str(exc_info.value)
+    assert "Não foi possível determinar um campo para 'front_text'" in str(exc_info.value)
