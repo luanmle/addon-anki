@@ -318,3 +318,295 @@ def test_sync_prevent_duplicate_by_card_id(mock_sync_setup):
     assert saved_card.status == "active"
     
     assert callback_called == [(True, "Successfully synced 1 changes.")]
+
+
+def test_sync_bootstrap_no_subscriptions(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    db.get_all_decks.return_value = []
+    api.list_subscriptions.return_value = MagicMock(items=[])
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    assert callback_called == [(True, "No installed decks to sync.")]
+
+
+def test_sync_bootstrap_with_subscriptions(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    db.get_all_decks.return_value = []
+    engine._ensure_deck = MagicMock(return_value=123)
+    
+    # Mock active subscription
+    sub = MagicMock(deck_id="d_sub", unsubscribed_at=None)
+    api.list_subscriptions.return_value = MagicMock(items=[sub])
+    db.get_deck.return_value = None
+    
+    # Mock manifest
+    manifest = MagicMock()
+    manifest.name = "Sub Deck"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {
+            "note_type": "nt",
+            "fields": ["Front"],
+            "field_mapping": {"Front": "front_text"}
+        }
+    }
+    api.get_deck_manifest.return_value = manifest
+    
+    # Mock sync response (since_release=0 bootstrap)
+    c_added = MagicMock(
+        action="added",
+        card_kind="basic",
+        card_id="c_boot",
+        public_id="P_boot",
+        new_card_version_id="v1",
+        tags=[],
+        fields={"front_text": "Bootstrap front"},
+        template=None
+    )
+    sync_resp = MagicMock(to_release=5, changes=[c_added])
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    # Mock Anki note creation return
+    engine.note_manager.create_note.return_value = 600
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Verify Anki API calls
+    api.list_subscriptions.assert_called_once()
+    api.get_deck_manifest.assert_called_once_with("d_sub")
+    api.sync_deck_all_pages.assert_called_once_with("d_sub", since_release=0)
+    
+    # Verify note creation & DB insertions
+    engine.note_manager.create_note.assert_called_once_with(
+        deck_id=123,
+        note_type_name="nt",
+        public_id="P_boot",
+        card_id="c_boot",
+        version_id="v1",
+        tags=[],
+        fields={"front_text": "Bootstrap front"},
+        field_mapping={"Front": "front_text"}
+    )
+    db.upsert_deck.assert_called_once()
+    db.upsert_card.assert_called_once()
+    db.add_sync_log.assert_called_once()
+    
+    assert len(callback_called) == 1
+    assert "Installed 1 subscribed decks" in callback_called[0][1]
+
+
+def test_sync_invalid_delta_action(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+    
+    # Mock delta with invalid action
+    c_invalid = MagicMock(
+        action="invalid_action",
+        card_kind="basic",
+        card_id="c_inv",
+        public_id="P1",
+        new_card_version_id="v1",
+        tags=[],
+        fields={"Front": "Val"}
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_invalid], from_release=0, to_release=1)
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Verify no note manager action was invoked
+    engine.note_manager.create_note.assert_not_called()
+    engine.note_manager.update_note.assert_not_called()
+    engine.note_manager.suspend_note.assert_not_called()
+    engine.note_manager.deprecate_note.assert_not_called()
+    db.upsert_card.assert_not_called()
+    
+    # But sync finishes successfully (with 0 stats in log)
+    assert callback_called == [(True, "Successfully synced 1 changes.")]
+    db.add_sync_log.assert_called_once()
+    log = db.add_sync_log.call_args[0][0]
+    assert log.cards_added == 0
+    assert log.cards_updated == 0
+    assert log.cards_removed == 0
+    assert log.cards_deprecated == 0
+
+
+def test_sync_invalid_delta_missing_fields(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+    
+    # Mock delta with missing fields for added/updated
+    c_added = MagicMock(action="added", card_kind="basic", card_id="c_add", public_id="P1", fields=None)
+    c_updated = MagicMock(action="updated", card_kind="basic", card_id="c_upd", public_id="P2", fields=None)
+    
+    sync_resp = MagicMock(has_changes=True, changes=[c_added, c_updated], from_release=0, to_release=1)
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Verify note manager was not called to create/update
+    engine.note_manager.create_note.assert_not_called()
+    engine.note_manager.update_note.assert_not_called()
+    db.upsert_card.assert_not_called()
+    
+    assert callback_called == [(True, "Successfully synced 2 changes.")]
+
+
+def test_sync_missing_public_id(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+    
+    # Added card but missing public_id (None)
+    c_added = MagicMock(
+        action="added",
+        card_kind="basic",
+        card_id="c_add",
+        public_id=None,
+        new_card_version_id="v1",
+        tags=[],
+        fields={"Front": "Val"}
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_added], from_release=0, to_release=1)
+    api.sync_deck_all_pages.return_value = sync_resp
+    
+    # Make create_note raise an error if public_id is None
+    def mock_create_note(*args, **kwargs):
+        pub_id = kwargs.get("public_id")
+        if pub_id is None:
+            raise ValueError("Public ID is required")
+        return 700
+    engine.note_manager.create_note.side_effect = mock_create_note
+    engine.backup_manager.create_backup.return_value = "backup_file"
+    
+    callback_called = []
+    def callback(success, message):
+        callback_called.append((success, message))
+        
+    engine.sync_all(callback)
+    
+    # Assert rollback was executed
+    engine.backup_manager.create_backup.assert_called_once()
+    engine.backup_manager.restore_backup.assert_called_once_with("backup_file")
+    
+    assert len(callback_called) == 1
+    success, msg = callback_called[0]
+    assert success is False
+    assert "Public ID is required" in msg
+
+
+def test_installer_install_deck_prevent_duplicate():
+    from anki_concursos.sync.installer import DeckInstaller
+    
+    with patch("anki_concursos.sync.installer.QueryOp", MockQueryOp), \
+         patch("anki_concursos.sync.installer.mw") as mock_mw:
+        
+        api = MagicMock()
+        db = MagicMock()
+        
+        manifest = MagicMock()
+        manifest.name = "Sub Deck"
+        manifest.note_type = "nt"
+        manifest.supported_note_types = {
+            "basic": {
+                "note_type": "nt",
+                "fields": ["Front"],
+                "field_mapping": {"Front": "f1"}
+            }
+        }
+        api.get_deck_manifest.return_value = manifest
+        
+        # added card that already exists in Anki
+        c_added = MagicMock(
+            action="added",
+            card_kind="basic",
+            card_id="c_dup",
+            public_id="P_dup",
+            new_card_version_id="v1",
+            tags=[],
+            fields={"f1": "Q1"},
+            template=None
+        )
+        sync_resp = MagicMock(to_release=5, changes=[c_added])
+        api.sync_deck_all_pages.return_value = sync_resp
+        
+        installer = DeckInstaller(api, db)
+        installer.nt_manager = MagicMock()
+        installer.deck_manager = MagicMock()
+        installer.deck_manager.ensure_deck.return_value = 123
+        installer.note_manager = MagicMock()
+        
+        # Simulate Anki note ID 888 already exists for this card_id
+        installer.note_manager.find_note_by_card_id.return_value = 888
+        
+        callback_called = []
+        def callback(success, message):
+            callback_called.append((success, message))
+            
+        installer.install_deck("d_sub", callback)
+        
+        # Verify update_note was called instead of create_note
+        installer.note_manager.create_note.assert_not_called()
+        installer.note_manager.update_note.assert_called_once_with(
+            anki_note_id=888,
+            version_id="v1",
+            fields={"f1": "Q1"},
+            field_mapping={"Front": "f1"}
+        )
+        
+        # Verify DB upsert
+        db.upsert_card.assert_called_once()
+        saved_card = db.upsert_card.call_args[0][0]
+        assert saved_card.card_id == "c_dup"
+        assert saved_card.anki_note_id == 888
+        
+        assert callback_called == [(True, "Successfully installed 1 cards.")]
+
