@@ -1,6 +1,6 @@
 ---
 name: anki-compatibility-migration
-description: Use this skill when selecting supported Anki versions, upgrading an add-on, handling Qt5 versus Qt6, adapting changed hooks or operations, removing deprecated APIs, or diagnosing version-specific breakage; it builds a verified compatibility matrix and isolates proven branches.
+description: Use this skill when an add-on breaks on a specific Anki version, when migrating from Qt5 to Qt6, when adapting changed hooks or renamed APIs after an Anki upgrade, or when removing deprecated code from a previously supported version window; it builds a verified compatibility matrix and centralizes proven branches in compat.py.
 ---
 
 # Anki Compatibility and Migration

@@ -104,3 +104,29 @@ class AnkiDeckTemplateResponse:
     back_html: str
     styling_css: str = ""
 
+@dataclass
+class AnkiDeckTemplateVersionResponse:
+    template_id: str
+    template_key: str
+    template_name: str
+    note_type: str
+    card_kind: str
+    version_number: int
+    content_hash: str
+    status: str
+    fields: List[str]
+    field_mapping: Dict[str, str]
+    front_html: str
+    back_html: str
+    styling_css: str
+    created_by: str
+    created_at: str
+
+@dataclass
+class AnkiDeckTemplateSyncResponse:
+    deck_id: str
+    from_version: int
+    to_version: int
+    has_changes: bool
+    changes: List[AnkiDeckTemplateVersionResponse]
+

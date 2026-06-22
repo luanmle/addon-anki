@@ -127,6 +127,7 @@ class DeckInstaller:
                     error_message=None
                 ))
                 
+                self._refresh_anki_ui()
                 mw.progress.finish()
                 callback(True, f"Successfully installed {count} cards.")
                 
@@ -143,4 +144,17 @@ class DeckInstaller:
         )
         op.failure(lambda exc: callback(False, str(exc)))
         op.with_progress("Fetching deck data from server...").run_in_background()
+
+    @staticmethod
+    def _refresh_anki_ui() -> None:
+        try:
+            if mw and getattr(mw, "deckBrowser", None):
+                mw.deckBrowser.refresh()
+        except Exception:
+            pass
+        try:
+            if mw:
+                mw.reset()
+        except Exception:
+            pass
 

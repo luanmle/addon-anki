@@ -37,6 +37,22 @@ class DeckExporter:
         metadata_fields = {"Public ID", "Card ID", "Version ID"}
         cloze_pattern = re.compile(r"\{\{c\d+::.*?\}\}")
 
+        # Pre-scan: for each cloze-model note type, check whether ANY note
+        # actually contains cloze markup. This determines the canonical card_kind
+        # for the entire note type so that every note and its template always agree.
+        note_type_has_cloze: dict[str, bool] = {}
+        for note_id in note_ids:
+            note = mw.col.get_note(note_id)
+            notetype = note.model()
+            if not notetype or notetype["type"] != 1:
+                continue
+            nt_name = notetype["name"]
+            if note_type_has_cloze.get(nt_name):
+                continue
+            flds = [f["name"] for f in notetype["flds"] if f["name"] not in metadata_fields]
+            if any(cloze_pattern.search(note[f] or "") for f in flds):
+                note_type_has_cloze[nt_name] = True
+
         for note_id in note_ids:
             note = mw.col.get_note(note_id)
             notetype = note.model()
@@ -44,7 +60,13 @@ class DeckExporter:
                 continue
 
             note_type_name = notetype["name"]
-            card_kind = "cloze" if notetype["type"] == 1 else "basic"
+            # Canonical card_kind: cloze only if the model is type=1 AND at least
+            # one note in the deck actually has {{c1::}} markup.
+            card_kind = (
+                "cloze"
+                if notetype["type"] == 1 and note_type_has_cloze.get(note_type_name, False)
+                else "basic"
+            )
             fields_list = [
                 f["name"]
                 for f in notetype["flds"]
@@ -73,7 +95,13 @@ class DeckExporter:
 
             source_note_id = str(getattr(note, "id", note_id))
             source_note_guid = getattr(note, "guid", None)
-            source_deck_path = deck_name
+            card_ids = mw.col.find_cards(f"nid:{note_id}")
+            if card_ids:
+                first_card = mw.col.get_card(card_ids[0])
+                note_deck_info = mw.col.decks.get(first_card.did)
+                source_deck_path = note_deck_info["name"] if note_deck_info else deck_name
+            else:
+                source_deck_path = deck_name
 
             for tmpl in tmpls:
                 tmpl_name = tmpl["name"]
@@ -283,15 +311,3 @@ class DeckExporter:
             raise ValueError(
                 f"A nota ID {note_id} ({note_type_name}) precisa mapear explicitamente um campo para 'front_text'."
             )
-
-        if card_kind == "cloze":
-            front_source = next(
-                (source for source, target in field_mapping.items() if target == "front_text"),
-                None,
-            )
-            front_value = note_fields.get(front_source, "") if front_source else ""
-            if not isinstance(front_value, str) or not cloze_pattern.search(front_value):
-                raise ValueError(
-                    f"A nota de omissão (cloze) ID {note_id} precisa ter a marcação {{c1::...}} "
-                    f"no campo mapeado para front_text ('{front_source}')."
-                )

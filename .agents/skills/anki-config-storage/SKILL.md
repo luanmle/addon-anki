@@ -1,6 +1,6 @@
 ---
 name: anki-config-storage
-description: Use this skill for Anki add-on settings, config.json, config.md, custom preferences dialogs, user_files, caches, local mappings, synchronized small options, credentials, or migrations of persisted add-on data; it chooses storage based on lifecycle, sensitivity, size, and sync requirements.
+description: Use this skill when deciding where to persist Anki add-on data: config.json defaults, config.md documentation, user_files for preserved user data, collection config for synced small options, local caches, or OS credential store for tokens; for the preferences dialog UI use anki-qt-ui, for schema version migrations across Anki upgrades use anki-compatibility-migration.
 ---
 
 # Anki Configuration and Storage

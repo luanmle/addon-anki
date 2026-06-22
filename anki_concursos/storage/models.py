@@ -11,6 +11,7 @@ class RemoteDeck:
     last_sync: Optional[str]
     created_at: str
     updated_at: str
+    latest_template_version: int = 0
 
 @dataclass
 class RemoteCard:

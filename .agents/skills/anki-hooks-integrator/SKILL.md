@@ -1,6 +1,6 @@
 ---
 name: anki-hooks-integrator
-description: Use this skill when adding behavior to Anki lifecycle events, reviewer, browser, editor, deck browser, profile loading, sync, menus, or webviews; it verifies exact gui_hooks or hooks signatures and prefers documented new-style hooks over monkey-patching or legacy hook guesses.
+description: Use this skill when connecting add-on behavior to Anki lifecycle events such as reviewer, browser, editor, deck browser, profile loading, or sync; it verifies exact gui_hooks or anki.hooks signatures and prefers new-style hooks over monkey-patching; for menu or toolbar items use anki-qt-ui, for JS-to-Python bridges use anki-webview-bridge.
 ---
 
 # Anki Hooks Integrator

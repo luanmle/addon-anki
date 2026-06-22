@@ -2,11 +2,9 @@
 
 from aqt import mw, gui_hooks
 
-from aqt import mw, gui_hooks
-
-from .utils.logging import setup_logging
 from .gui.menu import setup_menu
 from .hooks.lifecycle import on_profile_did_open
+from .utils.logging import setup_logging
 
 def setup() -> None:
     """Entry point for the add-on. Defers heavy initialization."""

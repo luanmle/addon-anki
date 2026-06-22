@@ -1,6 +1,6 @@
 ---
 name: anki-background-operations
-description: Use this skill for network requests, remote synchronization, imports, exports, large searches, bulk card changes, media processing, or any operation that may block Anki's interface; it selects verified QueryOp or CollectionOp patterns and enforces main-thread-only Qt access.
+description: Use this skill when an Anki add-on needs QueryOp for read-only or non-undoable collection work, CollectionOp for user-triggered mutations, or a thread-safe pattern for imports, exports, large searches, bulk card changes, or media processing; it enforces main-thread-only Qt access and prevents blocking the UI event loop.
 ---
 
 # Anki Background Operations

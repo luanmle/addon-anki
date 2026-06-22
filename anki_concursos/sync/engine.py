@@ -44,40 +44,66 @@ class SyncEngine:
                     raise ve
                 except Exception:
                     pass # Ignore parsing errors of unexpected version formats
-            
-            # Fetch updates for all decks
+
+            # Fetch updates for all decks (content + template deltas)
             results = []
             for deck in decks:
                 manifest = self.api.get_deck_manifest(deck.deck_id)
                 sync_resp = self.api.sync_deck_all_pages(deck.deck_id, since_release=deck.latest_release)
-                results.append({"deck": deck, "manifest": manifest, "sync": sync_resp})
+                template_sync = self.api.sync_deck_templates(deck.deck_id, since_version=deck.latest_template_version)
+                results.append({
+                    "deck": deck,
+                    "manifest": manifest,
+                    "sync": sync_resp,
+                    "template_sync": template_sync,
+                })
             return results
-            
+
         def on_success(results: List[dict]) -> None:
             # We are back on the main thread
-            
-            # Count total changes
-            total_changes = sum(len(r["sync"].changes) for r in results)
-            if total_changes == 0:
+            now = datetime.now(timezone.utc).isoformat()
+
+            total_content = sum(len(r["sync"].changes) for r in results)
+            total_templates = sum(len(r["template_sync"].changes) for r in results)
+
+            if total_content == 0 and total_templates == 0:
                 callback(True, "Already up to date.")
                 return
-                
-            mw.progress.start(label=f"Applying {total_changes} updates...", immediate=True)
-            
+
+            label = f"Applying {total_content} updates" + (
+                f", {total_templates} template changes" if total_templates else ""
+            ) + "..."
+            mw.progress.start(label=label, immediate=True)
+
             # Create backup before applying
             backup_path = self.backup_manager.create_backup()
-            
+
             try:
                 for res in results:
-                    self._apply_deck_sync(res["deck"], res["manifest"], res["sync"])
-                    
+                    deck = res["deck"]
+                    template_sync = res["template_sync"]
+
+                    # Apply template structure changes first so note content uses
+                    # the correct field layout.
+                    if template_sync.has_changes:
+                        self.nt_manager.apply_template_versions(template_sync.changes)
+                        deck.latest_template_version = template_sync.to_version
+                        deck.updated_at = now
+                        self.db.upsert_deck(deck)
+
+                    self._apply_deck_sync(deck, res["manifest"], res["sync"])
+
                 mw.progress.finish()
-                callback(True, f"Successfully synced {total_changes} changes.")
-                
+                if total_templates and total_content:
+                    callback(True, f"Successfully synced {total_content} changes, {total_templates} template update(s).")
+                elif total_templates:
+                    callback(True, f"Templates atualizados: {total_templates}.")
+                else:
+                    callback(True, f"Successfully synced {total_content} changes.")
+
             except Exception as e:
                 mw.progress.finish()
                 logger.exception("Sync failed during application")
-                # Attempt to rollback DB
                 self.backup_manager.restore_backup(backup_path)
                 callback(False, f"Sync failed: {str(e)}. Local database was rolled back. You may need to use Anki's Undo if cards were modified.")
                 
@@ -99,7 +125,7 @@ class SyncEngine:
                     curr_parts = [int(p) for p in VERSION.split(".")]
                     req_parts = [int(p) for p in min_ver.split(".")]
                     if curr_parts < req_parts:
-                        raise ValueError(f"Sua versÃ£o do add-on ({VERSION}) Ã© obsoleta. A versÃ£o mÃ­nima suportada Ã© {min_ver}. Por favor, atualize o add-on.")
+                        raise ValueError(f"Sua versão do add-on ({VERSION}) é obsoleta. A versão mínima suportada é {min_ver}. Por favor, atualize o add-on.")
                 except ValueError as ve:
                     raise ve
                 except Exception:
@@ -142,6 +168,7 @@ class SyncEngine:
                     )
                     installed += 1
 
+                self._refresh_anki_ui()
                 mw.progress.finish()
                 callback(True, f"Installed {installed} subscribed decks. Run sync again to fetch updates.")
             except Exception as e:
@@ -172,6 +199,7 @@ class SyncEngine:
             updated_at=now,
         )
         self.db.upsert_deck(remote_deck)
+        deck_id_cache: dict = {manifest.name: anki_deck_id}
         count = 0
         for change in sync_resp.changes:
             if change.action != "added" or not change.fields:
@@ -196,8 +224,11 @@ class SyncEngine:
                 )
                 note_id = existing_note_id
             else:
+                note_deck_path = getattr(change, "source_deck_path", None) or manifest.name
+                if note_deck_path not in deck_id_cache:
+                    deck_id_cache[note_deck_path] = self._ensure_deck(note_deck_path)
                 note_id = self.note_manager.create_note(
-                    deck_id=anki_deck_id,
+                    deck_id=deck_id_cache[note_deck_path],
                     note_type_name=note_type_name,
                     public_id=change.public_id,
                     card_id=change.card_id,
@@ -237,16 +268,30 @@ class SyncEngine:
         from ..services.deck_manager import DeckManager
         return DeckManager().ensure_deck(deck_name)
 
+    @staticmethod
+    def _refresh_anki_ui() -> None:
+        try:
+            if mw and getattr(mw, "deckBrowser", None):
+                mw.deckBrowser.refresh()
+        except Exception:
+            pass
+        try:
+            if mw:
+                mw.reset()
+        except Exception:
+            pass
+
     def _apply_deck_sync(self, deck: RemoteDeck, manifest, sync_resp) -> None:
         if not sync_resp.has_changes or not sync_resp.changes:
             return
             
         now = datetime.now(timezone.utc).isoformat()
         stats = {"added": 0, "updated": 0, "removed": 0, "deprecated": 0}
-        
+        deck_id_cache: dict = {deck.deck_name: deck.anki_deck_id}
+
         # Ensure note types
         self.nt_manager.ensure_note_type(manifest)
-        
+
         for change in sync_resp.changes:
             kind = change.card_kind or "basic"
             template = change.template if isinstance(change.template, dict) else None
@@ -282,8 +327,11 @@ class SyncEngine:
                     )
                     stats["updated" if change.action == "updated" else "added"] += 1
                 else:
+                    note_deck_path = getattr(change, "source_deck_path", None) or deck.deck_name
+                    if note_deck_path not in deck_id_cache:
+                        deck_id_cache[note_deck_path] = self._ensure_deck(note_deck_path)
                     anki_note_id = self.note_manager.create_note(
-                        deck_id=deck.anki_deck_id,
+                        deck_id=deck_id_cache[note_deck_path],
                         note_type_name=note_type_name,
                         public_id=change.public_id,
                         card_id=change.card_id,

@@ -1,6 +1,6 @@
 ---
 name: anki-webview-bridge
-description: Use this skill for Anki reviewer, editor, deck browser, graphs, or custom webview HTML/CSS/JavaScript; it verifies webview hooks, registers web exports, namespaces pycmd messages, validates payloads, and prevents unsafe assumptions about DOM timing or synchronous JavaScript.
+description: Use this skill when injecting CSS or JavaScript into Anki webviews, registering assets with setWebExports, implementing a pycmd JS-to-Python message bridge, or sanitizing HTML inserted into reviewer, editor, or deck browser; for lifecycle hook wiring use anki-hooks-integrator.
 ---
 
 # Anki WebView Bridge

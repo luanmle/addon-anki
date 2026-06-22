@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -10,10 +11,11 @@ from aqt import mw
 
 from .auth import AuthService
 from .models import (
-    UserResponse, TokenResponse, SubscribableDeckResponse, 
-    SubscribableDeckListResponse, DeckSubscriptionResponse, 
-    DeckSubscriptionListResponse, AnkiDeckManifestResponse, 
-    AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse
+    UserResponse, TokenResponse, SubscribableDeckResponse,
+    SubscribableDeckListResponse, DeckSubscriptionResponse,
+    DeckSubscriptionListResponse, AnkiDeckManifestResponse,
+    AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse,
+    AnkiDeckTemplateVersionResponse, AnkiDeckTemplateSyncResponse,
 )
 from ..consts import DEFAULT_API_URL, API_ENVIRONMENTS, DEFAULT_API_ENVIRONMENT, VERSION
 
@@ -37,7 +39,7 @@ class ApiError(Exception):
                 
         # Translate common error patterns to Portuguese for user display
         lower_msg = message.lower()
-        if "not subscribed" in lower_msg or "sem assinatura" in lower_msg or self.code == "not_subscribed":
+        if "not subscribed" in lower_msg or "subscribe to this deck" in lower_msg or "sem assinatura" in lower_msg or self.code == "not_subscribed":
             message = "Você não possui uma assinatura ativa para este baralho."
         elif "not published" in lower_msg or "não publicado" in lower_msg or self.code == "deck_not_published":
             message = "Este baralho ainda não foi publicado na plataforma."
@@ -81,30 +83,31 @@ class ApiClient:
                 pass
         self.timeout = 30
         
-    def _request(self, method: str, endpoint: str, data: Optional[Dict] = None, require_auth: bool = True) -> Any:
+    def _request(self, method: str, endpoint: str, data: Optional[Dict] = None, require_auth: bool = True, timeout: Optional[int] = None) -> Any:
         url = f"{self.base_url}{endpoint}"
-        
+        actual_timeout = timeout if timeout is not None else self.timeout
+
         headers = {
             "Accept": "application/json",
             "User-Agent": f"AnkiConcursos/{VERSION}"
         }
-        
+
         if data is not None:
             headers["Content-Type"] = "application/json"
             encoded_data = json.dumps(data).encode("utf-8")
         else:
             encoded_data = None
-            
+
         if require_auth:
             token = self.auth_service.get_token()
             if not token:
                 raise ApiError("Usuário não autenticado. Por favor, realize o login para sincronizar.", status_code=401)
             headers["Authorization"] = f"Bearer {token}"
-            
+
         req = urllib.request.Request(url, data=encoded_data, headers=headers, method=method)
-        
+
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with urllib.request.urlopen(req, timeout=actual_timeout) as response:
                 body = response.read().decode("utf-8")
                 if not body:
                     return None
@@ -119,12 +122,12 @@ class ApiClient:
                         new_token = self.refresh_token()
                     except Exception as refresh_err:
                         logger.warning(f"Refresh token endpoint failed or not supported by backend: {refresh_err}")
-                        
+
                     if new_token:
                         headers["Authorization"] = f"Bearer {new_token}"
                         req = urllib.request.Request(url, data=encoded_data, headers=headers, method=method)
                         try:
-                            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                            with urllib.request.urlopen(req, timeout=actual_timeout) as response:
                                 body = response.read().decode("utf-8")
                                 if not body:
                                     return None
@@ -142,12 +145,20 @@ class ApiClient:
                 else:
                     self.auth_service.clear_token()
                     raise ApiError("Credenciais inválidas.", status_code=401, response_body=body)
-                    
+
             logger.error(f"HTTPError {e.code} on {method} {url}: {body}")
             raise ApiError(f"HTTP Error {e.code}", status_code=e.code, response_body=body)
         except urllib.error.URLError as e:
             logger.error(f"URLError on {method} {url}: {e.reason}")
-            raise ApiError(f"Não foi possível conectar ao servidor. Verifique sua conexão com a internet ou a URL da API: {e.reason}")
+            if isinstance(e.reason, (ConnectionResetError, ConnectionAbortedError)):
+                raise ApiError(
+                    "O servidor encerrou a conexão inesperadamente. "
+                    "O baralho pode ser muito grande ou o servidor está sobrecarregado. "
+                    "Tente novamente em instantes."
+                ) from e
+            raise ApiError(
+                f"Não foi possível conectar ao servidor. Verifique sua conexão com a internet ou a URL da API: {e.reason}"
+            ) from e
             
     def login(self, email: str, password: str) -> TokenResponse:
         """Login and save token. Does not return TokenResponse directly since auth_service handles it, but we can return it."""
@@ -260,6 +271,17 @@ class ApiClient:
             has_changes=len(all_changes) > 0,
             changes=all_changes
         )
+    def sync_deck_templates(self, deck_id: str, since_version: int = 0) -> AnkiDeckTemplateSyncResponse:
+        resp = self._request("GET", f"/addon/decks/{deck_id}/templates/sync?since_version={since_version}")
+        changes = [parse_dataclass(AnkiDeckTemplateVersionResponse, c) for c in resp.get("changes", [])]
+        return AnkiDeckTemplateSyncResponse(
+            deck_id=resp["deck_id"],
+            from_version=resp["from_version"],
+            to_version=resp["to_version"],
+            has_changes=resp["has_changes"],
+            changes=changes,
+        )
+
     def get_addon_status(self) -> Dict[str, Any]:
         """Fetch general status and minimum supported add-on version."""
         try:
@@ -274,6 +296,55 @@ class ApiClient:
             logger.warning(f"Failed to fetch addon status: {e}")
             return {}
 
+    _UPLOAD_BATCH_SIZE = 50
+
     def upload_deck(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Upload a complete deck to the platform."""
-        return self._request("POST", "/addon/decks/upload", data=payload, require_auth=True)
+        """Upload deck in batches to avoid server timeout on large decks.
+
+        The platform accumulates DeckCard memberships across calls (idempotent via
+        canonical_key). Only the last batch triggers publish_release so partial
+        batches never produce an incomplete release.
+        """
+        notes = payload.get("notes", [])
+        templates = payload.get("templates", [])
+
+        if len(notes) <= self._UPLOAD_BATCH_SIZE:
+            return self._upload_deck_batch(payload)
+
+        publish_release = payload.get("publish_release", True)
+        logger.info(f"Large deck ({len(notes)} notes). Uploading in batches of {self._UPLOAD_BATCH_SIZE}.")
+
+        last_resp: Optional[Dict[str, Any]] = None
+        for i in range(0, len(notes), self._UPLOAD_BATCH_SIZE):
+            batch_notes = notes[i : i + self._UPLOAD_BATCH_SIZE]
+            is_last = (i + self._UPLOAD_BATCH_SIZE) >= len(notes)
+            batch_payload = {
+                **payload,
+                "notes": batch_notes,
+                "templates": templates,
+                "publish_release": publish_release if is_last else False,
+            }
+            logger.info(f"Batch {i // self._UPLOAD_BATCH_SIZE + 1}: notes {i + 1}–{i + len(batch_notes)}")
+            last_resp = self._upload_deck_batch(batch_payload)
+
+        return last_resp  # type: ignore[return-value]
+
+    def _upload_deck_batch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Single batch POST with one retry on transient connection errors."""
+        last_exc: Optional[ApiError] = None
+        for attempt in range(2):
+            try:
+                return self._request("POST", "/addon/decks/upload", data=payload, require_auth=True, timeout=120)
+            except ApiError as e:
+                last_exc = e
+                cause = e.__cause__
+                if (
+                    attempt == 0
+                    and isinstance(cause, urllib.error.URLError)
+                    and isinstance(cause.reason, (ConnectionResetError, ConnectionAbortedError))
+                ):
+                    logger.info(f"Upload batch connection error ({cause.reason}). Retrying in 3s...")
+                    time.sleep(3)
+                    continue
+                break
+        raise last_exc  # type: ignore[misc]

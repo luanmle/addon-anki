@@ -1,6 +1,6 @@
 ---
 name: anki-remote-api-client
-description: Use this skill when an Anki add-on must call FastAPI, REST, GraphQL, AnkiHub-like services, authentication endpoints, download updates, upload edits, or synchronize remote data; it designs a typed API boundary with timeouts, retries, idempotency, offline behavior, and background execution.
+description: Use this skill when designing the transport layer for an Anki add-on that calls FastAPI, REST, GraphQL, or AnkiHub-like services: typed request/response models, authentication, retries, idempotency, conflict handling, and offline resilience; for the threading mechanism that keeps Anki responsive during HTTP calls use anki-background-operations.
 ---
 
 # Anki Remote API Client

@@ -28,26 +28,37 @@ class MockQueryOp:
             else:
                 raise e
 
+def _no_template_sync():
+    m = MagicMock()
+    m.has_changes = False
+    m.changes = []
+    m.to_version = 0
+    return m
+
+
 @pytest.fixture
 def mock_sync_setup():
     with patch("anki_concursos.sync.engine.QueryOp", MockQueryOp), \
          patch("anki_concursos.sync.engine.mw") as mock_mw:
-        
+
         api = MagicMock()
         db = MagicMock()
         db.get_card.return_value = None
-        
+
         # Mock status API
         api.get_addon_status.return_value = {"min_addon_version": "0.1.0"}
-        
+        # Default: no template changes
+        api.sync_deck_templates.return_value = _no_template_sync()
+
         engine = SyncEngine(api, db)
-        
+
         # Mock the managers to prevent accessing Anki/filesystem databases
         engine.nt_manager = MagicMock()
         engine.note_manager = MagicMock()
         engine.note_manager.find_note_by_card_id.return_value = None
         engine.backup_manager = MagicMock()
-        
+        engine._ensure_deck = MagicMock(return_value=123)
+
         yield engine, api, db, mock_mw
 
 def test_sync_version_incompatibility(mock_sync_setup):
@@ -609,4 +620,74 @@ def test_installer_install_deck_prevent_duplicate():
         assert saved_card.anki_note_id == 888
         
         assert callback_called == [(True, "Successfully installed 1 cards.")]
+
+
+def test_sync_applies_template_versions_before_content(mock_sync_setup):
+    """Template sync runs before content sync so note types are up-to-date."""
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", latest_release=5,
+                      last_sync=None, created_at="2026", updated_at="2026",
+                      latest_template_version=1)
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock(name="Deck 1", note_type="nt", supported_note_types={})
+    manifest.name = "Deck 1"
+    api.get_deck_manifest.return_value = manifest
+
+    sync_resp = MagicMock(has_changes=False, changes=[], from_release=5, to_release=5)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    tmpl_version = MagicMock(
+        template_id="t1", template_key="k1", template_name="Card 1",
+        note_type="nt", card_kind="basic", version_number=2,
+        fields=["Front", "Back"], field_mapping={"Front": "front_text"},
+        front_html="{{Front}}", back_html="{{Back}}", styling_css=".card{}",
+        content_hash="abc", status="published", created_by="u1", created_at="2026",
+    )
+    template_sync = MagicMock(has_changes=True, changes=[tmpl_version], to_version=2)
+    api.sync_deck_templates.return_value = template_sync
+
+    engine.nt_manager.apply_template_versions.return_value = 1
+
+    callback_called = []
+    engine.sync_all(lambda ok, msg: callback_called.append((ok, msg)))
+
+    api.sync_deck_templates.assert_called_once_with("d1", since_version=1)
+    engine.nt_manager.apply_template_versions.assert_called_once_with(template_sync.changes)
+    db.upsert_deck.assert_called()
+    saved_deck = db.upsert_deck.call_args[0][0]
+    assert saved_deck.latest_template_version == 2
+
+    assert callback_called[0][0] is True
+    assert "template" in callback_called[0][1].lower()
+
+
+def test_sync_template_version_persisted_even_without_content_changes(mock_sync_setup):
+    """latest_template_version is saved to DB even when content sync has no changes."""
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", latest_release=0,
+                      last_sync=None, created_at="2026", updated_at="2026",
+                      latest_template_version=0)
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    api.get_deck_manifest.return_value = manifest
+
+    sync_resp = MagicMock(has_changes=False, changes=[], from_release=0, to_release=0)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    tmpl_version = MagicMock(version_number=3)
+    template_sync = MagicMock(has_changes=True, changes=[tmpl_version], to_version=3)
+    api.sync_deck_templates.return_value = template_sync
+    engine.nt_manager.apply_template_versions.return_value = 1
+
+    engine.sync_all(lambda ok, msg: None)
+
+    # upsert_deck must have been called to persist the new template version
+    db.upsert_deck.assert_called()
+    saved = db.upsert_deck.call_args[0][0]
+    assert saved.latest_template_version == 3
 

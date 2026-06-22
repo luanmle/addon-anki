@@ -312,11 +312,67 @@ def test_upload_deck_success(mock_auth):
         }
         
         res = client.upload_deck(payload)
-        
+
         assert res == mock_resp_body
         args, kwargs = mock_urlopen.call_args
         req = args[0]
         assert req.method == "POST"
         assert "/addon/decks/upload" in req.full_url
         assert req.headers.get("Authorization") == "Bearer valid_token"
+
+
+def test_upload_deck_batches_large_payload(mock_auth):
+    """Decks exceeding BATCH_SIZE notes are split into multiple POSTs."""
+    client = ApiClient()
+    mock_resp_body = {
+        "deck_id": "d1", "deck_name": "Big Deck", "snapshot_id": "s1",
+        "published": True, "total_notes": 1, "created_cards": 1, "reused_cards": 0, "items": [],
+    }
+
+    note = {"note_type": "Basic", "card_kind": "basic", "fields": {"Front": "Q"}, "tags": []}
+    templates = [{"template_name": "Card 1", "note_type": "Basic", "card_kind": "basic",
+                  "fields": ["Front"], "field_mapping": {}, "front_html": "{{Front}}", "back_html": "{{Back}}", "styling_css": ""}]
+    total_notes = client._UPLOAD_BATCH_SIZE + 10  # one batch over the limit
+    payload = {
+        "deck_name": "Big Deck", "source_name": "addon", "publish_release": True,
+        "templates": templates, "notes": [note] * total_notes,
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=mock_resp_body)
+        client.upload_deck(payload)
+
+    assert mock_urlopen.call_count == 2  # two batches
+
+    # First batch must NOT publish
+    first_body = json.loads(mock_urlopen.call_args_list[0][0][0].data)
+    assert first_body["publish_release"] is False
+    assert len(first_body["notes"]) == client._UPLOAD_BATCH_SIZE
+    assert first_body["templates"] == templates
+
+    # Last batch must publish and contain remaining notes
+    last_body = json.loads(mock_urlopen.call_args_list[1][0][0].data)
+    assert last_body["publish_release"] is True
+    assert len(last_body["notes"]) == 10
+
+
+def test_upload_deck_retries_on_connection_aborted(mock_auth):
+    """ConnectionAbortedError (WinError 10053) triggers one retry."""
+    client = ApiClient()
+    mock_resp_body = {"deck_id": "d1", "deck_name": "D", "snapshot_id": "s1",
+                      "published": True, "total_notes": 1, "created_cards": 1, "reused_cards": 0, "items": []}
+
+    aborted = urllib.error.URLError(ConnectionAbortedError(10053, "aborted"))
+
+    with patch("urllib.request.urlopen") as mock_urlopen, \
+         patch("time.sleep"):
+        mock_urlopen.side_effect = [aborted, make_mock_response(body_dict=mock_resp_body)]
+        payload = {"deck_name": "D", "source_name": "addon", "publish_release": True,
+                   "templates": [{"template_name": "T", "note_type": "Basic", "card_kind": "basic",
+                                   "fields": ["F"], "field_mapping": {}, "front_html": "{{F}}", "back_html": "", "styling_css": ""}],
+                   "notes": [{"note_type": "Basic", "card_kind": "basic", "fields": {"F": "v"}, "tags": []}]}
+        res = client.upload_deck(payload)
+
+    assert mock_urlopen.call_count == 2
+    assert res["deck_id"] == "d1"
 

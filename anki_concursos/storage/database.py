@@ -65,14 +65,15 @@ class DatabaseManager:
         );
         
         CREATE TABLE IF NOT EXISTS remote_decks (
-            deck_id          TEXT PRIMARY KEY,
-            deck_name        TEXT NOT NULL,
-            anki_deck_id     INTEGER,
-            note_type_name   TEXT,
-            latest_release   INTEGER NOT NULL DEFAULT 0,
-            last_sync        TEXT,
-            created_at       TEXT NOT NULL,
-            updated_at       TEXT NOT NULL
+            deck_id                  TEXT PRIMARY KEY,
+            deck_name                TEXT NOT NULL,
+            anki_deck_id             INTEGER,
+            note_type_name           TEXT,
+            latest_release           INTEGER NOT NULL DEFAULT 0,
+            latest_template_version  INTEGER NOT NULL DEFAULT 0,
+            last_sync                TEXT,
+            created_at               TEXT NOT NULL,
+            updated_at               TEXT NOT NULL
         );
         
         CREATE TABLE IF NOT EXISTS remote_cards (
@@ -105,7 +106,21 @@ class DatabaseManager:
         """
         with self.transaction() as c:
             c.executescript(schema)
-            # basic migrations can go here
+        self._migrate_db()
+
+    def _migrate_db(self) -> None:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(remote_decks)")
+            columns = {row[1] for row in cursor.fetchall()}
+            if "latest_template_version" not in columns:
+                cursor.execute(
+                    "ALTER TABLE remote_decks ADD COLUMN latest_template_version INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.commit()
+        finally:
+            cursor.close()
             
     # --- Deck Methods ---
     
@@ -120,18 +135,21 @@ class DatabaseManager:
     def upsert_deck(self, deck: RemoteDeck) -> None:
         with self.transaction() as c:
             c.execute("""
-                INSERT INTO remote_decks 
-                (deck_id, deck_name, anki_deck_id, note_type_name, latest_release, last_sync, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO remote_decks
+                (deck_id, deck_name, anki_deck_id, note_type_name, latest_release,
+                 latest_template_version, last_sync, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(deck_id) DO UPDATE SET
                     deck_name=excluded.deck_name,
                     anki_deck_id=excluded.anki_deck_id,
                     note_type_name=excluded.note_type_name,
                     latest_release=excluded.latest_release,
+                    latest_template_version=excluded.latest_template_version,
                     last_sync=excluded.last_sync,
                     updated_at=excluded.updated_at
             """, (deck.deck_id, deck.deck_name, deck.anki_deck_id, deck.note_type_name,
-                  deck.latest_release, deck.last_sync, deck.created_at, deck.updated_at))
+                  deck.latest_release, deck.latest_template_version,
+                  deck.last_sync, deck.created_at, deck.updated_at))
                   
     def get_all_decks(self) -> List[RemoteDeck]:
         with self.transaction() as c:

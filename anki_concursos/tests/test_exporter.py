@@ -186,6 +186,71 @@ def test_export_deck_derives_mapping_from_templates_without_config(mock_mw):
 
 
 @patch("anki_concursos.services.deck_exporter.mw")
+def test_export_deck_cloze_model_without_markup_exports_as_basic(mock_mw):
+    """Cloze note type whose notes ALL lack {{c1::}} markup must export as basic."""
+    exporter = DeckExporter()
+    mock_mw.col.decks.get.return_value = {"name": "Certo Errado"}
+    mock_mw.col.find_notes.return_value = [2001]
+    mock_mw.addonManager.getConfig.return_value = {}
+
+    mock_note = _make_mock_note(
+        {
+            "Afirmação": "A Terra é redonda.",
+            "Certo - Errado": "Certo",
+        }
+    )
+    notetype = {
+        "name": "Certo Errado",
+        "type": 1,
+        "flds": [{"name": "Afirmação"}, {"name": "Certo - Errado"}],
+        "tmpls": [{"name": "Card 1", "qfmt": "{{Afirmação}}", "afmt": "{{Certo - Errado}}"}],
+        "css": "",
+    }
+    mock_note.model.return_value = notetype
+    mock_mw.col.get_note.return_value = mock_note
+
+    payload = exporter.export_deck(1)
+
+    assert payload["notes"][0]["card_kind"] == "basic"
+    assert payload["templates"][0]["card_kind"] == "basic"
+    assert payload["notes"][0]["fields"]["Afirmação"] == "A Terra é redonda."
+
+
+@patch("anki_concursos.services.deck_exporter.mw")
+def test_export_deck_mixed_cloze_model_all_exported_as_cloze(mock_mw):
+    """Mixed cloze model (some notes with markup, some without) → all exported as cloze.
+
+    The platform requires note.card_kind == template.card_kind. Pre-scan detects
+    ANY note with cloze markup → canonical card_kind = 'cloze' for the whole type.
+    """
+    exporter = DeckExporter()
+    mock_mw.col.decks.get.return_value = {"name": "ESQ Cloze"}
+    mock_mw.col.find_notes.return_value = [3001, 3002]
+    mock_mw.addonManager.getConfig.return_value = {}
+
+    notetype = {
+        "name": "3. ESQ-Cloze [v5]+",
+        "type": 1,
+        "flds": [{"name": "Texto"}, {"name": "Extra"}],
+        "tmpls": [{"name": "Cloze", "qfmt": "{{cloze:Texto}}", "afmt": "{{cloze:Texto}}{{Extra}}"}],
+        "css": "",
+    }
+    note_cloze = _make_mock_note({"Texto": "Brasil é uma república {{c1::federativa}}.", "Extra": ""})
+    note_cloze.model.return_value = notetype
+    note_cloze.tags = []
+    note_basic = _make_mock_note({"Texto": "Artigo 5 trata de direitos fundamentais.", "Extra": ""})
+    note_basic.model.return_value = notetype
+    note_basic.tags = []
+
+    mock_mw.col.get_note.side_effect = [note_cloze, note_basic, note_cloze, note_basic]
+
+    payload = exporter.export_deck(1)
+
+    assert payload["templates"][0]["card_kind"] == "cloze"
+    assert all(n["card_kind"] == "cloze" for n in payload["notes"])
+
+
+@patch("anki_concursos.services.deck_exporter.mw")
 def test_export_deck_requires_front_text_mapping(mock_mw):
     exporter = DeckExporter()
     mock_mw.col.decks.get.return_value = {"name": "Direito Constitucional"}
