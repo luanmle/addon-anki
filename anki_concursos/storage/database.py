@@ -161,6 +161,14 @@ class DatabaseManager:
                 return RemoteCard(**dict(row))
         return None
         
+    def get_active_cards_by_deck(self, deck_id: str) -> List[RemoteCard]:
+        with self.transaction() as c:
+            c.execute(
+                "SELECT * FROM remote_cards WHERE deck_id = ? AND status = 'active'",
+                (deck_id,),
+            )
+            return [RemoteCard(**dict(row)) for row in c.fetchall()]
+
     def upsert_card(self, card: RemoteCard) -> None:
         with self.transaction() as c:
             c.execute("""

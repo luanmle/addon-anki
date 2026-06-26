@@ -75,6 +75,9 @@ class AnkiSyncChangeResponse:
     card_kind: Optional[str] = None
     note_type: Optional[str] = None
     template_name: Optional[str] = None
+    # None means the server did not send the flag (fall back to heuristic).
+    native: Optional[bool] = None
+    content_hash: Optional[str] = None
     fields: Optional[Dict[str, str]] = None
     template: Optional[Dict[str, Any]] = None
     source_note_id: Optional[str] = None
@@ -92,6 +95,20 @@ class AnkiDeckSyncResponse:
     page: Optional[int] = None
     pages: Optional[int] = None
     total_changes: Optional[int] = None
+
+@dataclass
+class AnkiDeckStateCardResponse:
+    card_id: str
+    public_id: str
+    card_version_id: str
+    content_hash: Optional[str] = None
+
+@dataclass
+class AnkiDeckStateResponse:
+    deck_id: str
+    latest_release: int
+    total_active: int
+    cards: List[AnkiDeckStateCardResponse] = field(default_factory=list)
 
 @dataclass
 class AnkiDeckTemplateResponse:

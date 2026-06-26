@@ -55,12 +55,29 @@ class NoteManager:
             logger.error(f"Failed to update note {anki_note_id}: {e}")
 
     def _apply_fields(self, note: Any, fields: Dict[str, str], field_mapping: Optional[Dict[str, str]]) -> None:
+        consumed: set = set()
         if field_mapping:
             for f_name, json_key in field_mapping.items():
                 if json_key in fields:
                     note[f_name] = fields[json_key]
+                    consumed.add(json_key)
                 elif f_name in fields:
                     note[f_name] = fields[f_name]
+                    consumed.add(f_name)
+
+            # A mapping that omits a field must not silently drop its content:
+            # apply remaining keys that match a real note field.
+            try:
+                valid_names = set(note.keys())
+            except Exception:
+                valid_names = set()
+            for field_name, value in fields.items():
+                if field_name in consumed or field_name not in valid_names:
+                    continue
+                try:
+                    note[field_name] = value
+                except Exception:
+                    continue
             return
 
         for field_name, value in fields.items():

@@ -195,6 +195,84 @@ def test_sync_apply_changes(mock_sync_setup):
     
     assert callback_called == [(True, "Successfully synced 4 changes.")]
 
+
+def test_sync_native_manifest_fields_are_applied_without_legacy_mapping(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "Meu Modelo Customizado"
+    manifest.templates = [
+        {
+            "template_name": "Card 1",
+            "note_type": "Meu Modelo Customizado",
+            "card_kind": "basic",
+            "fields": ["Enunciado", "Alternativas", "Comentario"],
+            "front_html": "{{Enunciado}}",
+            "back_html": "{{FrontSide}}\n\n{{Comentario}}",
+            "styling_css": "",
+        }
+    ]
+    manifest.supported_note_types = {
+        "basic": {
+            "note_type": "Anki Concursos Basic",
+            "fields": ["Front", "Back"],
+            "field_mapping": {"Front": "front_text", "Back": "back_text"},
+        }
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    c_added = MagicMock(
+        action="added",
+        card_kind="basic",
+        card_id="c_native",
+        public_id="P_native",
+        new_card_version_id="v1",
+        tags=[],
+        fields={
+            "Enunciado": "Julgue o item.",
+            "Alternativas": "Certo ou errado",
+            "Comentario": "Comentario livre.",
+        },
+        note_type="Meu Modelo Customizado",
+        template_name="Card 1",
+        template=None,
+    )
+    sync_resp = MagicMock(
+        has_changes=True,
+        changes=[c_added],
+        from_release=0,
+        to_release=1,
+    )
+    api.sync_deck_all_pages.return_value = sync_resp
+    engine.note_manager.create_note.return_value = 100
+
+    callback_called = []
+
+    def callback(success, message):
+        callback_called.append((success, message))
+
+    engine.sync_all(callback)
+
+    engine.note_manager.create_note.assert_called_once_with(
+        deck_id=123,
+        note_type_name="Meu Modelo Customizado",
+        public_id="P_native",
+        card_id="c_native",
+        version_id="v1",
+        tags=[],
+        fields={
+            "Enunciado": "Julgue o item.",
+            "Alternativas": "Certo ou errado",
+            "Comentario": "Comentario livre.",
+        },
+        field_mapping=None,
+    )
+    assert callback_called == [(True, "Successfully synced 1 changes.")]
+
 def test_sync_engine_rollback_on_error(mock_sync_setup):
     engine, api, db, mock_mw = mock_sync_setup
     
@@ -610,3 +688,243 @@ def test_installer_install_deck_prevent_duplicate():
         
         assert callback_called == [(True, "Successfully installed 1 cards.")]
 
+
+def test_version_is_outdated_handles_nonnumeric_and_padding():
+    # Equal versions, including zero-padding of shorter strings.
+    assert SyncEngine._version_is_outdated("0.1.0", "0.1.0") is False
+    assert SyncEngine._version_is_outdated("0.1", "0.1.0") is False
+    assert SyncEngine._version_is_outdated("1.0.0", "1.0") is False
+    # Genuinely older.
+    assert SyncEngine._version_is_outdated("0.1.0", "0.2.0") is True
+    # Non-numeric segments must not raise; treated as 0.
+    assert SyncEngine._version_is_outdated("0.1.0b1", "0.1.0") is False
+    assert SyncEngine._version_is_outdated("0.1.0", "0.2.0-rc1") is True
+
+
+def test_assert_version_supported_ignores_garbage_min_version(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+    # A malformed server min version must be tolerated, not crash sync.
+    engine._assert_version_supported({"min_addon_version": "not-a-version"})
+    engine._assert_version_supported({})
+    engine._assert_version_supported({"min_addon_version": None})
+
+
+def test_sync_isolates_failed_deck_fetch(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck_fail = RemoteDeck("dfail", "Deck Fail", 1, "nt", 0, None, "2026", "2026")
+    deck_ok = RemoteDeck("dok", "Deck OK", 2, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck_fail, deck_ok]
+    db.get_card.return_value = None
+
+    manifest = MagicMock()
+    manifest.name = "Deck OK"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    # First deck's manifest fetch fails (e.g. 403 unsubscribed); second succeeds.
+    api.get_deck_manifest.side_effect = [RuntimeError("403 Forbidden"), manifest]
+
+    c_added = MagicMock(
+        action="added",
+        card_kind="basic",
+        card_id="c1",
+        public_id="P1",
+        new_card_version_id="v1",
+        tags=[],
+        fields={"Front": "Q1"},
+        template=None,
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_added], from_release=0, to_release=1)
+    api.sync_deck_all_pages.return_value = sync_resp
+    engine.note_manager.create_note.return_value = 700
+
+    callback_called = []
+    engine.sync_all(lambda success, message: callback_called.append((success, message)))
+
+    # The healthy deck still applied despite the other deck failing to fetch.
+    engine.note_manager.create_note.assert_called_once()
+    assert len(callback_called) == 1
+    success, msg = callback_called[0]
+    assert success is True
+    assert "Successfully synced 1 changes" in msg
+    assert "Deck Fail" in msg
+
+
+def test_sync_groups_collection_changes_into_one_undo(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 0, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    db.get_card.return_value = None
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    c_added = MagicMock(
+        action="added", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v1", tags=[], fields={"Front": "Q1"}, template=None,
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_added], from_release=0, to_release=1)
+    api.sync_deck_all_pages.return_value = sync_resp
+    engine.note_manager.create_note.return_value = 700
+
+    handle = object()
+    mock_mw.col.add_custom_undo_entry.return_value = handle
+
+    engine.sync_all(lambda *a: None)
+
+    mock_mw.col.add_custom_undo_entry.assert_called_once()
+    mock_mw.col.merge_undo_entries.assert_called_once_with(handle)
+
+
+def test_sync_skips_write_when_content_hash_unchanged(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    # Card already tracked locally with the same content hash the server sends.
+    db.get_card.return_value = RemoteCard(
+        card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
+        anki_note_id=500, card_kind="basic", content_hash="HASH",
+        status="active", created_at="2026", updated_at="2026",
+    )
+
+    c_added = MagicMock(
+        action="added", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v1", tags=[], fields={"Front": "Q1"},
+        template=None, content_hash="HASH",
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_added], from_release=5, to_release=6)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    engine.sync_all(lambda *a: None)
+
+    # Unchanged content => no collection write (avoids mod bump / AnkiWeb churn).
+    engine.note_manager.update_note.assert_not_called()
+    engine.note_manager.create_note.assert_not_called()
+    # Tracking is still refreshed.
+    db.upsert_card.assert_called_once()
+
+
+def test_sync_writes_when_content_hash_differs(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    db.get_card.return_value = RemoteCard(
+        card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
+        anki_note_id=500, card_kind="basic", content_hash="OLD",
+        status="active", created_at="2026", updated_at="2026",
+    )
+
+    c_updated = MagicMock(
+        action="updated", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v2", tags=[], fields={"Front": "Q2"},
+        template=None, content_hash="NEW",
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_updated], from_release=5, to_release=6)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    engine.sync_all(lambda *a: None)
+
+    engine.note_manager.update_note.assert_called_once()
+
+
+def _state(latest_release, *card_ids):
+    from anki_concursos.api.models import AnkiDeckStateResponse, AnkiDeckStateCardResponse
+    cards = [
+        AnkiDeckStateCardResponse(card_id=cid, public_id=cid.upper(), card_version_id="v" + cid)
+        for cid in card_ids
+    ]
+    return AnkiDeckStateResponse(
+        deck_id="d1", latest_release=latest_release, total_active=len(cards), cards=cards
+    )
+
+
+def test_sync_reconciles_orphan_deletions(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 7, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+    db.get_card.return_value = None
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {}
+    api.get_deck_manifest.return_value = manifest
+
+    # No content changes, but upstream dropped a card with no `removed` event.
+    sync_resp = MagicMock(has_changes=False, changes=[], from_release=7, to_release=7)
+    api.sync_deck_all_pages.return_value = sync_resp
+    api.get_deck_state.return_value = _state(7, "keep")
+
+    keep = RemoteCard("keep", "KEEP", "vkeep", "d1", 100, "basic", None, "active", "2026", "2026")
+    orphan = RemoteCard("gone", "GONE", "vgone", "d1", 900, "basic", None, "active", "2026", "2026")
+    db.get_active_cards_by_deck.return_value = [keep, orphan]
+
+    msgs = []
+    engine.sync_all(lambda s, m: msgs.append((s, m)))
+
+    engine.note_manager.suspend_note.assert_called_once_with(900)
+    removed = [
+        call.args[0]
+        for call in db.upsert_card.call_args_list
+        if call.args[0].card_id == "gone"
+    ]
+    assert removed and removed[-1].status == "removed"
+    assert msgs[0][0] is True
+    assert "Reconciled 1" in msgs[0][1]
+
+
+def test_sync_skips_reconcile_on_release_mismatch(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 7, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {}
+    api.get_deck_manifest.return_value = manifest
+
+    sync_resp = MagicMock(has_changes=False, changes=[], from_release=7, to_release=7)
+    api.sync_deck_all_pages.return_value = sync_resp
+    # State pinned to a different release -> do not reconcile (avoid false deletes).
+    api.get_deck_state.return_value = _state(6, "keep")
+
+    db.get_active_cards_by_deck.return_value = [
+        RemoteCard("gone", "GONE", "vg", "d1", 900, "basic", None, "active", "2026", "2026")
+    ]
+
+    msgs = []
+    engine.sync_all(lambda s, m: msgs.append((s, m)))
+
+    engine.note_manager.suspend_note.assert_not_called()
+    assert msgs[0] == (True, "Already up to date.")

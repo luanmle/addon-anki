@@ -10,10 +10,11 @@ from aqt import mw
 
 from .auth import AuthService
 from .models import (
-    UserResponse, TokenResponse, SubscribableDeckResponse, 
-    SubscribableDeckListResponse, DeckSubscriptionResponse, 
-    DeckSubscriptionListResponse, AnkiDeckManifestResponse, 
-    AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse
+    UserResponse, TokenResponse, SubscribableDeckResponse,
+    SubscribableDeckListResponse, DeckSubscriptionResponse,
+    DeckSubscriptionListResponse, AnkiDeckManifestResponse,
+    AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse,
+    AnkiDeckStateResponse, AnkiDeckStateCardResponse
 )
 from ..consts import DEFAULT_API_URL, API_ENVIRONMENTS, DEFAULT_API_ENVIRONMENT, VERSION
 
@@ -216,13 +217,15 @@ class ApiClient:
         manifest.templates = templates  # type: ignore[attr-defined]
         return manifest
         
-    def sync_deck(self, deck_id: str, since_release: int, page: Optional[int] = None, page_size: Optional[int] = None) -> AnkiDeckSyncResponse:
+    def sync_deck(self, deck_id: str, since_release: int, page: Optional[int] = None, page_size: Optional[int] = None, to_release: Optional[int] = None) -> AnkiDeckSyncResponse:
         url = f"/addon/decks/{deck_id}/sync?since_release={since_release}"
+        if to_release is not None:
+            url += f"&to_release={to_release}"
         if page is not None:
             url += f"&page={page}"
         if page_size is not None:
             url += f"&page_size={page_size}"
-            
+
         resp = self._request("GET", url)
         changes = [parse_dataclass(AnkiSyncChangeResponse, c) for c in resp.get("changes", [])]
         return AnkiDeckSyncResponse(
@@ -241,25 +244,68 @@ class ApiClient:
         all_changes = []
         first_resp = self.sync_deck(deck_id, since_release, page=page, page_size=page_size)
         all_changes.extend(first_resp.changes)
-        
+
+        # Pin the release ceiling reported by page 1 so every later page reads
+        # the same snapshot even if a new release is published mid-pagination.
+        pinned_to_release = first_resp.to_release
+        expected_total = first_resp.total_changes
+
         total_pages = first_resp.pages
         if total_pages is None or not isinstance(total_pages, int) or total_pages < 1:
             total_pages = 1
-            
+
         # Avoid infinite loops by capping maximum pages
         max_pages = min(total_pages, 1000)
         while page < max_pages:
             page += 1
-            next_resp = self.sync_deck(deck_id, since_release, page=page, page_size=page_size)
+            next_resp = self.sync_deck(deck_id, since_release, page=page, page_size=page_size, to_release=pinned_to_release)
+            if next_resp.to_release != pinned_to_release:
+                raise ApiError(
+                    "O baralho mudou durante a sincronização. Tente novamente."
+                )
             all_changes.extend(next_resp.changes)
-            
+
+        # Completeness guard: the watermark must only advance once every change
+        # up to `pinned_to_release` was fetched. Caller aborts (no watermark
+        # advance) if this raises.
+        if (
+            isinstance(expected_total, int)
+            and len(all_changes) != expected_total
+        ):
+            raise ApiError(
+                f"Sincronização incompleta: {len(all_changes)}/{expected_total} "
+                "mudanças recebidas. Tente novamente."
+            )
+
         return AnkiDeckSyncResponse(
             deck_id=first_resp.deck_id,
             from_release=first_resp.from_release,
-            to_release=first_resp.to_release,
+            to_release=pinned_to_release,
             has_changes=len(all_changes) > 0,
-            changes=all_changes
+            changes=all_changes,
+            total_changes=expected_total
         )
+    def get_deck_state(self, deck_id: str) -> Optional[AnkiDeckStateResponse]:
+        """Full active-card state at the latest release, for orphan reconcile.
+
+        Returns None when the server does not expose the endpoint (404), so the
+        client stays compatible with older backends (reconcile is skipped).
+        """
+        try:
+            resp = self._request("GET", f"/addon/decks/{deck_id}/state")
+        except ApiError as e:
+            if e.status_code == 404:
+                logger.info("Endpoint /state ausente (404); reconcile de deleções ignorado.")
+                return None
+            raise
+        cards = [parse_dataclass(AnkiDeckStateCardResponse, c) for c in resp.get("cards", [])]
+        return AnkiDeckStateResponse(
+            deck_id=resp["deck_id"],
+            latest_release=resp["latest_release"],
+            total_active=resp.get("total_active", len(cards)),
+            cards=cards,
+        )
+
     def get_addon_status(self) -> Dict[str, Any]:
         """Fetch general status and minimum supported add-on version."""
         try:
