@@ -285,6 +285,12 @@ class SyncEngine:
                 continue
             if not self.note_manager.note_modified_after(anki_note_id, card.updated_at):
                 continue
+            # Pre-upgrade card (synced before baselines existed): no remote_fields
+            # to compare, so a real local edit can't be verified. Don't block the
+            # whole sync on an unverifiable difference — the normal apply below
+            # records a baseline, so conflict detection works from the next sync on.
+            if card.remote_fields is None:
+                continue
             # A newer mod time alone is noisy (tags, note-type tweaks, reposition
             # all bump it). Only conflict if the tracked content actually differs
             # from the last-synced baseline, ignoring protected fields.

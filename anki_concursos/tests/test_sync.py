@@ -1193,8 +1193,10 @@ def test_sync_aborts_before_overwriting_local_update_conflict(mock_sync_setup):
         card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
         anki_note_id=500, card_kind="basic", content_hash="OLD",
         status="active", created_at="2026", updated_at="2026-06-26T10:00:00+00:00",
+        remote_fields={"Front": "Q1"},
     )
     engine.note_manager.note_modified_after.return_value = True
+    engine.note_manager.note_differs_from.return_value = True
 
     c_updated = MagicMock(
         action="updated", card_kind="basic", card_id="c1", public_id="P1",
@@ -1214,6 +1216,46 @@ def test_sync_aborts_before_overwriting_local_update_conflict(mock_sync_setup):
     db.upsert_deck.assert_not_called()
     db.add_sync_log.assert_not_called()
     engine.backup_manager.create_backup.assert_not_called()
+
+
+def test_sync_pre_upgrade_card_without_baseline_does_not_block(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    # remote_fields=None → pre-upgrade card, no baseline to compare
+    db.get_card.return_value = RemoteCard(
+        card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
+        anki_note_id=500, card_kind="basic", content_hash="OLD",
+        status="active", created_at="2026", updated_at="2026-06-26T10:00:00+00:00",
+        remote_fields=None,
+    )
+    engine.note_manager.note_modified_after.return_value = True
+
+    c_updated = MagicMock(
+        action="updated", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v2", tags=[], fields={"Front": "Q2"},
+        template=None, content_hash="NEW",
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_updated], from_release=5, to_release=6)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    callback_called = []
+    engine.sync_all(lambda success, message: callback_called.append((success, message)))
+
+    assert callback_called[0][0] is True
+    assert "Conflito local" not in callback_called[0][1]
+    # no baseline → note_differs_from is never consulted
+    engine.note_manager.note_differs_from.assert_not_called()
 
 
 def test_sync_no_conflict_when_mod_bumped_but_content_unchanged(mock_sync_setup):
