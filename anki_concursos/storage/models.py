@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 @dataclass
 class RemoteDeck:
@@ -24,6 +24,7 @@ class RemoteCard:
     status: str
     created_at: str
     updated_at: str
+    remote_fields: Optional[Dict[str, str]] = None
 
 @dataclass
 class SyncLogEntry:

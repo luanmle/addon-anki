@@ -61,6 +61,7 @@ class AnkiDeckManifestResponse:
     supported_note_types: Dict[str, Any]
     tags: List[str] = field(default_factory=list)
     templates: List[Dict[str, Any]] = field(default_factory=list)
+    protected_fields: List[str] = field(default_factory=list)
 
 @dataclass
 class AnkiSyncChangeResponse:
@@ -75,8 +76,12 @@ class AnkiSyncChangeResponse:
     card_kind: Optional[str] = None
     note_type: Optional[str] = None
     template_name: Optional[str] = None
+    # None means the server did not send the flag (fall back to heuristic).
+    native: Optional[bool] = None
+    content_hash: Optional[str] = None
     fields: Optional[Dict[str, str]] = None
     template: Optional[Dict[str, Any]] = None
+    protected_fields: List[str] = field(default_factory=list)
     source_note_id: Optional[str] = None
     source_note_guid: Optional[str] = None
     source_deck_path: Optional[str] = None
@@ -94,6 +99,41 @@ class AnkiDeckSyncResponse:
     total_changes: Optional[int] = None
 
 @dataclass
+class AnkiDeckStateCardResponse:
+    card_id: str
+    public_id: str
+    card_version_id: str
+    content_hash: Optional[str] = None
+
+@dataclass
+class AnkiDeckStateResponse:
+    deck_id: str
+    latest_release: int
+    total_active: int
+    cards: List[AnkiDeckStateCardResponse] = field(default_factory=list)
+
+@dataclass
+class AnkiDeckReleaseSummaryResponse:
+    release_id: str
+    release_number: int
+    published_at: str
+    summary: Optional[str]
+    cards_added: int
+    cards_updated: int
+    cards_removed: int
+    cards_deprecated: int
+
+@dataclass
+class AnkiDeckReleaseListResponse:
+    deck_id: str
+    latest_release: int
+    items: List[AnkiDeckReleaseSummaryResponse]
+    page: int
+    page_size: int
+    total: int
+    pages: int
+
+@dataclass
 class AnkiDeckTemplateResponse:
     template_name: str
     note_type: str
@@ -103,4 +143,39 @@ class AnkiDeckTemplateResponse:
     front_html: str
     back_html: str
     styling_css: str = ""
+    protected_fields: List[str] = field(default_factory=list)
 
+
+@dataclass
+class NoteSuggestionRequest:
+    suggestion_type: str
+    fields: Dict[str, Any]
+    comment: str
+    added_tags: List[str] = field(default_factory=list)
+    removed_tags: List[str] = field(default_factory=list)
+    source: Optional[str] = None
+
+
+@dataclass
+class NoteSuggestionResponse:
+    suggestion_id: str
+    deck_id: Optional[str] = None
+    card_id: Optional[str] = None
+    public_id: Optional[str] = None
+    card_version_id: Optional[str] = None
+    version_number: Optional[int] = None
+    submitted_by_user_id: Optional[str] = None
+    submitted_by_email: Optional[str] = None
+    suggestion_type: Optional[str] = None
+    status: Optional[str] = None
+    fields: Dict[str, Any] = field(default_factory=dict)
+    added_tags: List[str] = field(default_factory=list)
+    removed_tags: List[str] = field(default_factory=list)
+    comment: Optional[str] = None
+    source: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    review_comment: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    resulting_card_version_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None

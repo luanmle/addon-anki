@@ -15,18 +15,20 @@ class LoginDialog(QDialog):
         layout.addWidget(self.status_label)
         
         form = QFormLayout()
+        self.email_label = QLabel("Email:")
         self.email_input = QLineEdit()
+        self.password_label = QLabel("Senha:")
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         
-        form.addRow("Email:", self.email_input)
-        form.addRow("Password:", self.password_input)
+        form.addRow(self.email_label, self.email_input)
+        form.addRow(self.password_label, self.password_input)
         layout.addLayout(form)
         
         btn_layout = QHBoxLayout()
-        self.btn_login = QPushButton("Login")
+        self.btn_login = QPushButton("Entrar")
         self.btn_login.clicked.connect(self.on_login)
-        self.btn_logout = QPushButton("Logout")
+        self.btn_logout = QPushButton("Sair")
         self.btn_logout.clicked.connect(self.on_logout)
         
         btn_layout.addWidget(self.btn_login)
@@ -38,31 +40,48 @@ class LoginDialog(QDialog):
     def update_ui(self):
         token = self.api.auth_service.get_token()
         if token:
-            self.status_label.setText("Status: Logged in")
+            email = self.api.auth_service.get_email()
+            if email:
+                self.status_label.setText(f"Login ativo: {email}")
+            else:
+                self.status_label.setText("Login ativo. Email indisponível; saia e entre novamente para atualizar.")
+            self.email_label.setVisible(False)
+            self.email_input.setVisible(False)
+            self.password_label.setVisible(False)
+            self.password_input.setVisible(False)
             self.btn_login.setEnabled(False)
+            self.btn_login.setVisible(False)
             self.btn_logout.setEnabled(True)
+            self.btn_logout.setVisible(True)
         else:
-            self.status_label.setText("Status: Not logged in")
+            self.status_label.setText("Informe email e senha para entrar.")
+            self.email_label.setVisible(True)
+            self.email_input.setVisible(True)
+            self.password_label.setVisible(True)
+            self.password_input.setVisible(True)
             self.btn_login.setEnabled(True)
+            self.btn_login.setVisible(True)
             self.btn_logout.setEnabled(False)
+            self.btn_logout.setVisible(False)
+            self.email_input.setFocus()
             
     def on_login(self):
         email = self.email_input.text().strip()
         pwd = self.password_input.text()
         
         if not email or not pwd:
-            QMessageBox.warning(self, "Error", "Email and password required.")
+            QMessageBox.warning(self, "Erro", "Email e senha são obrigatórios.")
             return
             
         try:
             self.api.login(email, pwd)
-            QMessageBox.information(self, "Success", "Logged in successfully!")
+            QMessageBox.information(self, "Sucesso", "Login realizado com sucesso.")
             self.update_ui()
             self.accept()
         except ApiError as e:
-            QMessageBox.critical(self, "Login Failed", str(e))
+            QMessageBox.critical(self, "Falha no login", str(e))
             
     def on_logout(self):
         self.api.auth_service.clear_token()
-        QMessageBox.information(self, "Success", "Logged out.")
+        self.password_input.clear()
         self.update_ui()

@@ -6,6 +6,7 @@ from aqt import mw, gui_hooks
 
 from .utils.logging import setup_logging
 from .gui.menu import setup_menu
+from .gui.editor import setup_editor
 from .hooks.lifecycle import on_profile_did_open
 
 def setup() -> None:
@@ -29,3 +30,4 @@ def on_profile_open() -> None:
 def on_main_window_init() -> None:
     """Called when Anki's main window is initialized."""
     setup_menu()
+    setup_editor()

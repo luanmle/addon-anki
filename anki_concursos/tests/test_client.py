@@ -4,7 +4,11 @@ import urllib.error
 from unittest.mock import patch, MagicMock
 
 from anki_concursos.api.client import ApiClient, ApiError
-from anki_concursos.api.models import TokenResponse, AnkiDeckSyncResponse, AnkiSyncChangeResponse
+from anki_concursos.api.models import (
+    AnkiDeckReleaseListResponse,
+    NoteSuggestionRequest,
+    TokenResponse,
+)
 
 def make_mock_response(status_code=200, body_dict=None):
     mock_resp = MagicMock()
@@ -27,10 +31,14 @@ def mock_auth():
         instance.get_token.side_effect = lambda: tokens.get("access_token")
         instance.get_refresh_token.side_effect = lambda: tokens.get("refresh_token")
         
-        def save_token(access, refresh=None):
+        def save_token(access, refresh=None, email=None):
             tokens["access_token"] = access
             if refresh:
                 tokens["refresh_token"] = refresh
+            else:
+                tokens.pop("refresh_token", None)
+            if email:
+                tokens["email"] = email
         instance.save_token.side_effect = save_token
         
         def clear_token():
@@ -89,6 +97,7 @@ def test_login_saves_tokens(mock_auth):
         assert res.refresh_token == "new_refresh"
         assert tokens["access_token"] == "new_access"
         assert tokens["refresh_token"] == "new_refresh"
+        assert tokens["email"] == "test@test.com"
 
 def test_request_token_refresh_on_401(mock_auth):
     auth_instance, tokens = mock_auth
@@ -187,6 +196,149 @@ def test_get_addon_status(mock_auth):
         mock_urlopen.return_value = make_mock_response(body_dict=status_response)
         res = client.get_addon_status()
         assert res == status_response
+
+
+def test_get_deck_releases(mock_auth):
+    client = ApiClient()
+    response_body = {
+        "deck_id": "d1",
+        "latest_release": 2,
+        "items": [
+            {
+                "release_id": "r2",
+                "release_number": 2,
+                "published_at": "2026-06-26T00:00:00Z",
+                "summary": "Correções",
+                "cards_added": 0,
+                "cards_updated": 3,
+                "cards_removed": 1,
+                "cards_deprecated": 0,
+            }
+        ],
+        "page": 1,
+        "page_size": 20,
+        "total": 1,
+        "pages": 1,
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=response_body)
+
+        res = client.get_deck_releases("d1")
+
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == f"{client.base_url}/addon/decks/d1/releases?page=1&page_size=20"
+        assert isinstance(res, AnkiDeckReleaseListResponse)
+        assert res.latest_release == 2
+        assert res.items[0].summary == "Correções"
+        assert res.items[0].cards_updated == 3
+
+
+def test_unsubscribe_uses_cancel_endpoint(mock_auth):
+    client = ApiClient()
+    response_body = {
+        "subscription_id": "sub-1",
+        "deck_id": "d1",
+        "deck_name": "Deck 1",
+        "latest_release": 3,
+        "active_card_count": 10,
+        "subscribed_at": "2026-06-26T00:00:00Z",
+        "unsubscribed_at": "2026-06-26T01:00:00Z",
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=response_body)
+
+        res = client.unsubscribe("d1")
+
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == f"{client.base_url}/subscriptions/d1/cancel"
+        assert req.get_method() == "POST"
+        assert res.deck_id == "d1"
+        assert res.unsubscribed_at == "2026-06-26T01:00:00Z"
+
+def test_create_card_suggestion_uses_addon_endpoint(mock_auth):
+    client = ApiClient()
+    response_body = {
+        "suggestion_id": "s1",
+        "card_id": "c1",
+        "public_id": "AC-1",
+        "card_version_id": "v1",
+        "version_number": 2,
+        "submitted_by_email": "user@example.com",
+        "suggestion_type": "updated_content",
+        "status": "pending",
+        "fields": {"Front": "Novo frente"},
+        "added_tags": ["tag1"],
+        "removed_tags": [],
+        "comment": "ajuste",
+        "created_at": "2026-06-27T00:00:00Z",
+        "updated_at": "2026-06-27T00:00:00Z",
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=response_body)
+
+        res = client.create_card_suggestion(
+            "c1",
+            NoteSuggestionRequest(
+                suggestion_type="updated_content",
+                fields={"Front": "Novo frente"},
+                added_tags=["tag1"],
+                comment="ajuste",
+            ),
+        )
+
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == f"{client.base_url}/addon/cards/c1/suggestions"
+        assert req.get_method() == "POST"
+        assert res.suggestion_id == "s1"
+        assert res.card_id == "c1"
+        assert res.fields["Front"] == "Novo frente"
+
+
+def test_create_new_note_suggestion_uses_addon_endpoint(mock_auth):
+    client = ApiClient()
+    response_body = {
+        "suggestion_id": "s2",
+        "deck_id": "d1",
+        "public_id": None,
+        "card_id": None,
+        "card_version_id": None,
+        "version_number": None,
+        "submitted_by_email": "user@example.com",
+        "suggestion_type": "new_card_to_add",
+        "status": "pending",
+        "fields": {"Front": "Pergunta", "Back": "Resposta"},
+        "added_tags": [],
+        "removed_tags": [],
+        "comment": "nova nota",
+        "created_at": "2026-06-27T00:00:00Z",
+        "updated_at": "2026-06-27T00:00:00Z",
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = make_mock_response(body_dict=response_body)
+
+        res = client.create_new_note_suggestion(
+            "d1",
+            NoteSuggestionRequest(
+                suggestion_type="new_card_to_add",
+                fields={"Front": "Pergunta", "Back": "Resposta"},
+                comment="nova nota",
+            ),
+        )
+
+        args, kwargs = mock_urlopen.call_args
+        req = args[0]
+        assert req.full_url == f"{client.base_url}/addon/decks/d1/note-suggestions"
+        assert req.get_method() == "POST"
+        assert res.suggestion_id == "s2"
+        assert res.deck_id == "d1"
+        assert res.fields["Back"] == "Resposta"
 
 def test_api_client_url_resolution():
     with patch("anki_concursos.api.client.mw") as mock_mw:
@@ -319,4 +471,3 @@ def test_upload_deck_success(mock_auth):
         assert req.method == "POST"
         assert "/addon/decks/upload" in req.full_url
         assert req.headers.get("Authorization") == "Bearer valid_token"
-
