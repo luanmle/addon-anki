@@ -31,7 +31,9 @@ class NoteManager:
             return note_time > sync_time.astimezone(timezone.utc)
         except Exception as e:
             logger.error(f"Failed to compare note mod time for note {anki_note_id}: {e}")
-            return False
+            # Fail safe: assume modified so we never silently overwrite a
+            # possibly-edited note when the comparison itself errors.
+            return True
 
     def note_differs_from(
         self,
@@ -112,18 +114,26 @@ class NoteManager:
         fields: Dict[str, str],
         field_mapping: Optional[Dict[str, str]] = None,
         protected_fields: Optional[Set[str]] = None,
-    ) -> None:
-        """Update an existing note's content without deleting it."""
+    ) -> bool:
+        """Update an existing note's content without deleting it.
+
+        Returns True on success, False on failure. Callers must check the
+        return value before recording the new content_hash — storing a new
+        hash after a failed write causes permanent desync (card skipped
+        forever on subsequent syncs).
+        """
         try:
             note = mw.col.get_note(anki_note_id)
-            
+
             note["Version ID"] = version_id or ""
-            
+
             self._apply_fields(note, fields, field_mapping, protected_fields=protected_fields)
-                    
+
             mw.col.update_note(note)
+            return True
         except Exception as e:
             logger.error(f"Failed to update note {anki_note_id}: {e}")
+            return False
 
     def _apply_fields(
         self,

@@ -47,12 +47,18 @@ class SyncEngine:
             }
             active_decks = []
             stale_decks = []
-            for deck in decks:
-                if deck.deck_id in subscribed_ids:
-                    active_decks.append(deck)
-                else:
-                    self.db.delete_deck(deck.deck_id)
-                    stale_decks.append(deck.deck_name)
+            # Guard: an empty subscription list while local decks exist is
+            # suspicious — likely a transient API failure. Skip stale-deck
+            # cleanup this run to avoid mass-deleting all local data on a
+            # network hiccup or auth blip. Normal deletion runs when
+            # subscribed_ids is non-empty (partial or full unsubscription).
+            if subscribed_ids or not decks:
+                for deck in decks:
+                    if deck.deck_id in subscribed_ids:
+                        active_decks.append(deck)
+                    else:
+                        self.db.delete_deck(deck.deck_id)
+                        stale_decks.append(deck.deck_name)
 
             # 3. Fetch updates per deck in isolation: one failing deck
             # (unsubscribed/deleted/network) must not abort the others.
@@ -508,7 +514,9 @@ class SyncEngine:
                 }
                 if protected_fields:
                     update_kwargs["protected_fields"] = protected_fields
-                self.note_manager.update_note(**update_kwargs)
+                ok = self.note_manager.update_note(**update_kwargs)
+                if ok is False:
+                    continue
                 note_id = existing_note_id
             else:
                 note_id = self.note_manager.create_note(
@@ -554,7 +562,7 @@ class SyncEngine:
         from ..services.deck_manager import DeckManager
         return DeckManager().ensure_deck(deck_name)
 
-    def _apply_deck_sync(self, deck: RemoteDeck, manifest, sync_resp, state=None) -> None:
+    def _apply_deck_sync(self, deck: RemoteDeck, manifest, sync_resp, state=None) -> int:
         now = datetime.now(timezone.utc).isoformat()
         stats = {"added": 0, "updated": 0, "removed": 0, "deprecated": 0}
 
@@ -604,7 +612,12 @@ class SyncEngine:
                         }
                         if protected_fields:
                             update_kwargs["protected_fields"] = protected_fields
-                        self.note_manager.update_note(**update_kwargs)
+                        ok = self.note_manager.update_note(**update_kwargs)
+                        if ok is False:
+                            # Write failed; do not record the new hash — the
+                            # card must be retried on the next sync rather than
+                            # silently drifting out of sync forever.
+                            continue
                 else:
                     deck.anki_deck_id = self._resolve_anki_deck_id(deck)
                     anki_note_id = self.note_manager.create_note(

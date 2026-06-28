@@ -692,6 +692,7 @@ def test_sync_installs_new_subscription_when_other_decks_exist(mock_sync_setup):
 
 
 def test_sync_forgets_local_deck_without_active_subscription(mock_sync_setup):
+    """I4: empty subscriptions with local decks present = suspicious; skip cleanup."""
     engine, api, db, mock_mw = mock_sync_setup
 
     deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
@@ -701,12 +702,12 @@ def test_sync_forgets_local_deck_without_active_subscription(mock_sync_setup):
     callback_called = []
     engine.sync_all(lambda success, message: callback_called.append((success, message)))
 
-    db.delete_deck.assert_called_once_with("d1")
+    # Empty subscription response with local decks present is treated as
+    # transient/suspicious — no decks are deleted this run.
+    db.delete_deck.assert_not_called()
     api.get_deck_manifest.assert_not_called()
     api.sync_deck_all_pages.assert_not_called()
-    assert callback_called == [
-        (True, "🗑️ Removido rastreamento local de 1 baralho sem inscrição: Deck 1.")
-    ]
+    assert callback_called == [(True, "Tudo atualizado.")]
 
 
 def test_sync_invalid_delta_action(mock_sync_setup):
@@ -1422,6 +1423,44 @@ def test_sync_reconciles_orphan_deletions(mock_sync_setup):
     assert removed and removed[-1].status == "removed"
     assert msgs[0][0] is True
     assert "Reconciliado 1" in msgs[0][1]
+
+
+def test_sync_failed_update_note_does_not_upsert_hash(mock_sync_setup):
+    """C1: if update_note fails, the new hash must not be stored (card stays retryable)."""
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    db.get_card.return_value = RemoteCard(
+        card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
+        anki_note_id=500, card_kind="basic", content_hash="OLD",
+        status="active", created_at="2026", updated_at="2026",
+    )
+
+    c_updated = MagicMock(
+        action="updated", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v2", tags=[], fields={"Front": "Q2"},
+        template=None, content_hash="NEW",
+    )
+    sync_resp = MagicMock(has_changes=True, changes=[c_updated], from_release=5, to_release=6)
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    # Simulate note write failure
+    engine.note_manager.update_note.return_value = False
+
+    engine.sync_all(lambda *a: None)
+
+    # Failed write: hash must NOT be stored so the card is retried next sync.
+    db.upsert_card.assert_not_called()
 
 
 def test_sync_skips_reconcile_on_release_mismatch(mock_sync_setup):

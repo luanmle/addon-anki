@@ -102,7 +102,9 @@ class DeckInstaller:
                             }
                             if protected_fields:
                                 update_kwargs["protected_fields"] = protected_fields
-                            self.note_manager.update_note(**update_kwargs)
+                            ok = self.note_manager.update_note(**update_kwargs)
+                            if ok is False:
+                                continue
                             note_id = existing_note_id
                         else:
                             note_id = self.note_manager.create_note(

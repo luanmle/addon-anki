@@ -83,3 +83,10 @@ def test_note_differs_from_true_without_baseline():
     with patch("anki_concursos.services.note_manager.mw") as mock_mw:
         mock_mw.col.get_note.return_value = _fake_note({"Front": "Q"})
         assert NoteManager().note_differs_from(1, None) is True
+
+
+def test_note_modified_after_returns_true_on_exception():
+    """C2: error during comparison must not silently allow overwriting a local edit."""
+    with patch("anki_concursos.services.note_manager.mw") as mock_mw:
+        mock_mw.col.get_note.side_effect = RuntimeError("collection locked")
+        assert NoteManager().note_modified_after(123, "2026-06-26T10:00:00+00:00") is True
