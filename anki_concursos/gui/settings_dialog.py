@@ -8,7 +8,7 @@ class SettingsDialog(QDialog):
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
         self.api = api
-        self.setWindowTitle("Anki Concursos - Settings")
+        self.setWindowTitle("Anki Concursos - Configurações")
         self.setMinimumWidth(450)
         
         self.addon_folder = __name__.split('.')[0]
@@ -38,8 +38,8 @@ class SettingsDialog(QDialog):
         self.env_cb = QComboBox()
         self.env_cb.addItem("Staging", "staging")
         self.env_cb.addItem("Production", "production")
-        self.env_cb.addItem("Local (Development)", "local")
-        self.env_cb.addItem("Custom URL", "custom")
+        self.env_cb.addItem("Local (desenvolvimento)", "local")
+        self.env_cb.addItem("URL personalizada", "custom")
         
         # Select active environment in combo box
         index = self.env_cb.findData(self.env)
@@ -48,14 +48,14 @@ class SettingsDialog(QDialog):
         else:
             self.env_cb.setCurrentIndex(self.env_cb.findData("custom"))
             
-        form.addRow("Environment:", self.env_cb)
+        form.addRow("Ambiente:", self.env_cb)
         
         self.api_url_input = QLineEdit(self.display_url)
-        form.addRow("API URL:", self.api_url_input)
+        form.addRow("URL da API:", self.api_url_input)
         
         self.effective_url_lbl = QLabel(self.display_url)
         self.effective_url_lbl.setStyleSheet("font-weight: bold; color: gray;")
-        form.addRow("Effective URL:", self.effective_url_lbl)
+        form.addRow("URL efetiva:", self.effective_url_lbl)
         
         # Connect change event
         self.env_cb.currentIndexChanged.connect(self.on_env_changed)
@@ -63,12 +63,12 @@ class SettingsDialog(QDialog):
         
         self.auto_sync_cb = QCheckBox()
         self.auto_sync_cb.setChecked(self.config.get("auto_sync", False))
-        form.addRow("Auto-sync on startup:", self.auto_sync_cb)
+        form.addRow("Sincronizar ao iniciar:", self.auto_sync_cb)
         
         self.log_level_cb = QComboBox()
         self.log_level_cb.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self.log_level_cb.setCurrentText(self.config.get("log_level", "INFO"))
-        form.addRow("Log Level:", self.log_level_cb)
+        form.addRow("Nível de log:", self.log_level_cb)
 
         self.upload_mappings_edit = QPlainTextEdit()
         self.upload_mappings_edit.setMinimumHeight(180)
@@ -78,16 +78,16 @@ class SettingsDialog(QDialog):
         self.upload_mappings_edit.setPlainText(
             json.dumps(self.config.get("upload_field_mappings", {}), indent=2, ensure_ascii=False)
         )
-        form.addRow("Upload field mappings (JSON):", self.upload_mappings_edit)
+        form.addRow("Mapeamento de campos para upload (JSON):", self.upload_mappings_edit)
         
         layout.addLayout(form)
         
         btn_layout = QHBoxLayout()
-        btn_test = QPushButton("Test Connection")
+        btn_test = QPushButton("Testar conexão")
         btn_test.clicked.connect(self.on_test)
         btn_layout.addWidget(btn_test)
         
-        btn_clear = QPushButton("Clear Data")
+        btn_clear = QPushButton("Limpar dados")
         btn_clear.clicked.connect(self.on_clear)
         btn_layout.addWidget(btn_clear)
         
@@ -125,27 +125,27 @@ class SettingsDialog(QDialog):
         try:
             try:
                 self.api.get_current_user()
-                QMessageBox.information(self, "Success", "Connection and Authentication successful!")
+                QMessageBox.information(self, "Sucesso", "Conexão e autenticação realizadas com sucesso.")
             except Exception as e:
                 # If we get 401, server is there but we aren't logged in.
                 if hasattr(e, 'status_code') and e.status_code == 401:
-                    QMessageBox.information(self, "Success", "Connected to API (Authentication required).")
+                    QMessageBox.information(self, "Sucesso", "API conectada. Autenticação necessária.")
                 else:
-                    QMessageBox.critical(self, "Error", f"Connection failed: {e}")
+                    QMessageBox.critical(self, "Erro", f"Falha na conexão: {e}")
         finally:
             self.api.base_url = old_url
             
     def on_clear(self):
-        reply = QMessageBox.question(self, "Confirm", "Clear local database and token? This will force a full resync.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, "Confirmar", "Limpar banco local e token? Isso forçará uma sincronização completa.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.api.auth_service.clear_token()
             db_path = mw.anki_concursos_db.db_path
             import os
             try:
                 os.remove(db_path)
-                QMessageBox.information(self, "Success", "Data cleared. Please restart Anki.")
+                QMessageBox.information(self, "Sucesso", "Dados limpos. Reinicie o Anki.")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete DB: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha ao excluir banco local: {e}")
  
     def on_accept(self):
         selected_env = self.env_cb.currentData()
@@ -166,8 +166,8 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 QMessageBox.critical(
                     self,
-                    "Invalid mapping JSON",
-                    f"Upload field mappings JSON is invalid: {exc}",
+                    "JSON de mapeamento inválido",
+                    f"O JSON de mapeamento de campos para upload é inválido: {exc}",
                 )
                 return
         else:
@@ -182,5 +182,5 @@ class SettingsDialog(QDialog):
         else:
             self.api.base_url = API_ENVIRONMENTS.get(selected_env, DEFAULT_API_URL).rstrip("/")
             
-        QMessageBox.information(self, "Success", "Settings saved.")
+        QMessageBox.information(self, "Sucesso", "Configurações salvas.")
         self.accept()

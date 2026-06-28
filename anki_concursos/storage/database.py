@@ -1,8 +1,9 @@
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from aqt import mw
@@ -83,6 +84,7 @@ class DatabaseManager:
             anki_note_id       INTEGER,
             card_kind          TEXT NOT NULL DEFAULT 'basic',
             content_hash       TEXT,
+            remote_fields      TEXT,
             status             TEXT NOT NULL DEFAULT 'active',
             created_at         TEXT NOT NULL,
             updated_at         TEXT NOT NULL
@@ -105,7 +107,13 @@ class DatabaseManager:
         """
         with self.transaction() as c:
             c.executescript(schema)
-            # basic migrations can go here
+            self._ensure_column(c, "remote_cards", "remote_fields", "TEXT")
+
+    def _ensure_column(self, cursor: sqlite3.Cursor, table: str, column: str, definition: str) -> None:
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             
     # --- Deck Methods ---
     
@@ -141,7 +149,38 @@ class DatabaseManager:
     def delete_deck(self, deck_id: str) -> None:
         with self.transaction() as c:
             c.execute("DELETE FROM remote_cards WHERE deck_id = ?", (deck_id,))
+            c.execute("DELETE FROM sync_log WHERE deck_id = ?", (deck_id,))
             c.execute("DELETE FROM remote_decks WHERE deck_id = ?", (deck_id,))
+
+    def repair_integrity(self) -> int:
+        """Repair safe local metadata issues and raise on SQLite corruption.
+
+        Only add-on sync metadata is modified. Existing Anki notes/decks are not
+        touched here.
+        """
+        with self.transaction() as c:
+            c.execute("""
+                DELETE FROM remote_cards
+                WHERE deck_id NOT IN (SELECT deck_id FROM remote_decks)
+            """)
+            removed_cards = c.rowcount if c.rowcount is not None else 0
+            c.execute("""
+                DELETE FROM sync_log
+                WHERE deck_id NOT IN (SELECT deck_id FROM remote_decks)
+            """)
+            removed_logs = c.rowcount if c.rowcount is not None else 0
+
+            c.execute("PRAGMA integrity_check")
+            integrity_rows = [row[0] for row in c.fetchall()]
+            if integrity_rows != ["ok"]:
+                raise RuntimeError("Local sync database integrity check failed: " + "; ".join(integrity_rows))
+
+            c.execute("PRAGMA foreign_key_check")
+            fk_rows: List[Tuple] = [tuple(row) for row in c.fetchall()]
+            if fk_rows:
+                raise RuntimeError(f"Local sync database foreign key check failed: {fk_rows}")
+
+            return removed_cards + removed_logs
             
     # --- Card Methods ---
     
@@ -150,7 +189,7 @@ class DatabaseManager:
             c.execute("SELECT * FROM remote_cards WHERE card_id = ?", (card_id,))
             row = c.fetchone()
             if row:
-                return RemoteCard(**dict(row))
+                return self._card_from_row(row)
         return None
         
     def get_card_by_anki_note_id(self, anki_note_id: int) -> Optional[RemoteCard]:
@@ -158,7 +197,7 @@ class DatabaseManager:
             c.execute("SELECT * FROM remote_cards WHERE anki_note_id = ?", (anki_note_id,))
             row = c.fetchone()
             if row:
-                return RemoteCard(**dict(row))
+                return self._card_from_row(row)
         return None
         
     def get_active_cards_by_deck(self, deck_id: str) -> List[RemoteCard]:
@@ -167,24 +206,42 @@ class DatabaseManager:
                 "SELECT * FROM remote_cards WHERE deck_id = ? AND status = 'active'",
                 (deck_id,),
             )
-            return [RemoteCard(**dict(row)) for row in c.fetchall()]
+            return [self._card_from_row(row) for row in c.fetchall()]
 
     def upsert_card(self, card: RemoteCard) -> None:
+        remote_fields = (
+            json.dumps(card.remote_fields, ensure_ascii=False)
+            if card.remote_fields is not None
+            else None
+        )
         with self.transaction() as c:
             c.execute("""
                 INSERT INTO remote_cards 
-                (card_id, public_id, card_version_id, deck_id, anki_note_id, card_kind, content_hash, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (card_id, public_id, card_version_id, deck_id, anki_note_id, card_kind, content_hash, remote_fields, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(card_id) DO UPDATE SET
                     card_version_id=excluded.card_version_id,
                     anki_note_id=excluded.anki_note_id,
                     card_kind=excluded.card_kind,
                     content_hash=excluded.content_hash,
+                    remote_fields=excluded.remote_fields,
                     status=excluded.status,
                     updated_at=excluded.updated_at
             """, (card.card_id, card.public_id, card.card_version_id, card.deck_id, 
-                  card.anki_note_id, card.card_kind, card.content_hash, card.status, 
+                  card.anki_note_id, card.card_kind, card.content_hash, remote_fields, card.status, 
                   card.created_at, card.updated_at))
+
+    def _card_from_row(self, row: sqlite3.Row) -> RemoteCard:
+        data = dict(row)
+        raw_fields = data.get("remote_fields")
+        if isinstance(raw_fields, str) and raw_fields:
+            try:
+                data["remote_fields"] = json.loads(raw_fields)
+            except json.JSONDecodeError:
+                data["remote_fields"] = None
+        else:
+            data["remote_fields"] = None
+        return RemoteCard(**data)
                   
     def update_card_status(self, card_id: str, status: str, version_id: Optional[str] = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -216,3 +273,18 @@ class DatabaseManager:
             """, (entry.deck_id, entry.from_release, entry.to_release, entry.cards_added,
                   entry.cards_updated, entry.cards_removed, entry.cards_deprecated, 
                   entry.synced_at, entry.duration_ms, 1 if entry.success else 0, entry.error_message))
+
+    def get_sync_logs(self, deck_id: str, limit: int = 10) -> List[SyncLogEntry]:
+        with self.transaction() as c:
+            c.execute("""
+                SELECT * FROM sync_log
+                WHERE deck_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (deck_id, limit))
+            rows = []
+            for row in c.fetchall():
+                data = dict(row)
+                data["success"] = bool(data["success"])
+                rows.append(SyncLogEntry(**data))
+            return rows

@@ -16,6 +16,17 @@
 4. **Background Execution**:
    - Network requests and large batch operations run in background threads using Anki 25+'s `QueryOp` to prevent UI freezing.
 
+5. **Local Session State**:
+   - Authentication state is stored under `user_files/auth.json`, including access token, optional refresh token, and the active login email.
+   - Logout removes this file so the login dialog returns to the email/password form.
+
+6. **Remote Subscriptions vs Local Installation**:
+   - Remote subscriptions come from the platform (`GET /subscriptions`) and represent decks the user is entitled to sync.
+   - Local installation is tracked in SQLite (`remote_decks`) and represents decks already materialized in the Anki collection.
+   - The subscriptions UI must show remote subscriptions and mark each deck as installed or not installed locally.
+   - Sync checks for remote subscriptions missing from local storage and installs them from release 0.
+   - Unsubscribe cancels the platform subscription and removes local sync tracking only; it does not delete Anki notes or decks.
+
 ## Components
 
 - **API Layer (`api/`)**: Centralized HTTP client using `urllib.request`. Defines strongly-typed Pydantic-like dataclasses for all endpoint responses.

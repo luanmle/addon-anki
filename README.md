@@ -33,6 +33,17 @@ python -m pytest
 
 ---
 
+## Documentando Alteracoes
+
+Toda alteracao de comportamento, bug fix, migracao, UI, contrato de API, storage ou release deve ser documentada no mesmo conjunto de mudancas.
+
+- Regra geral: veja `CONTRIBUTING.md`.
+- Indice da documentacao: `anki_concursos/docs/README.md`.
+- Template de registro: `anki_concursos/docs/changes/TEMPLATE.md`.
+- Registros historicos: `anki_concursos/docs/changes/`.
+
+---
+
 ## Como Empacotar o Add-on (`.ankiaddon`)
 
 Para gerar o arquivo de distribuição `.ankiaddon` pronto para produção e staging, execute o script de build na raiz do repositório:

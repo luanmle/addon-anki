@@ -14,7 +14,9 @@ from .models import (
     SubscribableDeckListResponse, DeckSubscriptionResponse,
     DeckSubscriptionListResponse, AnkiDeckManifestResponse,
     AnkiSyncChangeResponse, AnkiDeckSyncResponse, AnkiDeckTemplateResponse,
-    AnkiDeckStateResponse, AnkiDeckStateCardResponse
+    AnkiDeckStateResponse, AnkiDeckStateCardResponse,
+    AnkiDeckReleaseSummaryResponse, AnkiDeckReleaseListResponse,
+    NoteSuggestionRequest, NoteSuggestionResponse
 )
 from ..consts import DEFAULT_API_URL, API_ENVIRONMENTS, DEFAULT_API_ENVIRONMENT, VERSION
 
@@ -157,8 +159,13 @@ class ApiClient:
         # Wait, the auth schema has LoginRequest with email and password fields. We will send JSON.
         data = {"email": email, "password": password}
         resp = self._request("POST", "/auth/token", data=data, require_auth=False)
-        self.auth_service.save_token(resp["access_token"], resp.get("refresh_token"))
         user_data = parse_dataclass(UserResponse, resp["user"]) if "user" in resp else None
+        stored_email = user_data.email if user_data else email
+        self.auth_service.save_token(
+            resp["access_token"],
+            resp.get("refresh_token"),
+            email=stored_email,
+        )
         return TokenResponse(
             access_token=resp["access_token"],
             token_type=resp["token_type"],
@@ -306,6 +313,30 @@ class ApiClient:
             cards=cards,
         )
 
+    def get_deck_releases(
+        self,
+        deck_id: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> AnkiDeckReleaseListResponse:
+        resp = self._request(
+            "GET",
+            f"/addon/decks/{deck_id}/releases?page={page}&page_size={page_size}",
+        )
+        items = [
+            parse_dataclass(AnkiDeckReleaseSummaryResponse, item)
+            for item in resp.get("items", [])
+        ]
+        return AnkiDeckReleaseListResponse(
+            deck_id=resp["deck_id"],
+            latest_release=resp["latest_release"],
+            items=items,
+            page=resp["page"],
+            page_size=resp["page_size"],
+            total=resp["total"],
+            pages=resp["pages"],
+        )
+
     def get_addon_status(self) -> Dict[str, Any]:
         """Fetch general status and minimum supported add-on version."""
         try:
@@ -323,3 +354,29 @@ class ApiClient:
     def upload_deck(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Upload a complete deck to the platform."""
         return self._request("POST", "/addon/decks/upload", data=payload, require_auth=True)
+
+    def create_card_suggestion(
+        self,
+        card_id: str,
+        payload: NoteSuggestionRequest,
+    ) -> NoteSuggestionResponse:
+        resp = self._request(
+            "POST",
+            f"/addon/cards/{card_id}/suggestions",
+            data=dataclasses.asdict(payload),
+            require_auth=True,
+        )
+        return parse_dataclass(NoteSuggestionResponse, resp)
+
+    def create_new_note_suggestion(
+        self,
+        deck_id: str,
+        payload: NoteSuggestionRequest,
+    ) -> NoteSuggestionResponse:
+        resp = self._request(
+            "POST",
+            f"/addon/decks/{deck_id}/note-suggestions",
+            data=dataclasses.asdict(payload),
+            require_auth=True,
+        )
+        return parse_dataclass(NoteSuggestionResponse, resp)
