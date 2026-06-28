@@ -1,23 +1,87 @@
+from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from aqt import mw
 
 logger = logging.getLogger("anki_concursos.services.note")
 
 class NoteManager:
+    def note_exists(self, anki_note_id: int) -> bool:
+        """Return whether an Anki note id still exists in the collection."""
+        if not mw or not getattr(mw, "col", None):
+            return False
+        try:
+            return mw.col.get_note(anki_note_id) is not None
+        except Exception:
+            return False
+
+    def note_modified_after(self, anki_note_id: int, timestamp: Optional[str]) -> bool:
+        """Return whether an Anki note was modified after a stored sync timestamp."""
+        if not timestamp or not mw or not getattr(mw, "col", None):
+            return False
+        try:
+            note = mw.col.get_note(anki_note_id)
+            note_mod = getattr(note, "mod", None)
+            if note_mod is None:
+                return False
+            sync_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if sync_time.tzinfo is None:
+                sync_time = sync_time.replace(tzinfo=timezone.utc)
+            note_time = datetime.fromtimestamp(int(note_mod), tz=timezone.utc)
+            return note_time > sync_time.astimezone(timezone.utc)
+        except Exception as e:
+            logger.error(f"Failed to compare note mod time for note {anki_note_id}: {e}")
+            return False
+
+    def note_differs_from(
+        self,
+        anki_note_id: int,
+        baseline: Optional[Dict[str, str]],
+        ignore: Optional[Set[str]] = None,
+    ) -> bool:
+        """Whether the note's current fields differ from the last-synced baseline.
+
+        `baseline` are the fields the add-on last wrote (keyed by Anki field
+        name); `ignore` are field names to skip (e.g. protected fields, kept
+        local on purpose). Without a baseline, or on error, assume it differs
+        (fail safe — never silently overwrite a possibly-edited note).
+        """
+        if not baseline or not mw or not getattr(mw, "col", None):
+            return True
+        skip = ignore or set()
+        try:
+            note = mw.col.get_note(anki_note_id)
+            names = set(note.keys())
+            for field_name, value in baseline.items():
+                if field_name in skip or field_name not in names:
+                    continue
+                if note[field_name] != value:
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to compare note fields for note {anki_note_id}: {e}")
+            return True
+
     def find_note_by_card_id(self, card_id: str) -> Optional[int]:
         """Search Anki collection for a note with the given Card ID."""
+        note_ids = self.find_note_ids_by_card_id(card_id)
+        if len(note_ids) > 1:
+            logger.warning("Multiple notes found for Card ID %s: %s", card_id, note_ids)
+        return note_ids[0] if note_ids else None
+
+    def find_note_ids_by_card_id(self, card_id: str) -> List[int]:
+        """Search Anki collection for notes with the given Card ID."""
         if not mw or not getattr(mw, "col", None):
-            return None
+            return []
         try:
             safe_id = str(card_id).replace('"', '\\"')
             query = f'"Card ID:{safe_id}"'
             note_ids = mw.col.find_notes(query)
             if note_ids and isinstance(note_ids, (list, tuple)):
-                return note_ids[0]
+                return list(note_ids)
         except Exception as e:
             logger.error(f"Failed to find note by Card ID {card_id}: {e}")
-        return None
+        return []
 
     def create_note(self, deck_id: int, note_type_name: str, public_id: str, card_id: str, version_id: Optional[str], tags: List[str], fields: Dict[str, str], field_mapping: Optional[Dict[str, str]] = None) -> int:
         """Create a new note in Anki. Returns the new Anki Note ID."""
@@ -41,23 +105,39 @@ class NoteManager:
         mw.col.add_note(note, deck_id)
         return note.id
 
-    def update_note(self, anki_note_id: int, version_id: Optional[str], fields: Dict[str, str], field_mapping: Optional[Dict[str, str]] = None) -> None:
+    def update_note(
+        self,
+        anki_note_id: int,
+        version_id: Optional[str],
+        fields: Dict[str, str],
+        field_mapping: Optional[Dict[str, str]] = None,
+        protected_fields: Optional[Set[str]] = None,
+    ) -> None:
         """Update an existing note's content without deleting it."""
         try:
             note = mw.col.get_note(anki_note_id)
             
             note["Version ID"] = version_id or ""
             
-            self._apply_fields(note, fields, field_mapping)
+            self._apply_fields(note, fields, field_mapping, protected_fields=protected_fields)
                     
             mw.col.update_note(note)
         except Exception as e:
             logger.error(f"Failed to update note {anki_note_id}: {e}")
 
-    def _apply_fields(self, note: Any, fields: Dict[str, str], field_mapping: Optional[Dict[str, str]]) -> None:
+    def _apply_fields(
+        self,
+        note: Any,
+        fields: Dict[str, str],
+        field_mapping: Optional[Dict[str, str]],
+        protected_fields: Optional[Set[str]] = None,
+    ) -> None:
         consumed: set = set()
+        protected = protected_fields or set()
         if field_mapping:
             for f_name, json_key in field_mapping.items():
+                if f_name in protected:
+                    continue
                 if json_key in fields:
                     note[f_name] = fields[json_key]
                     consumed.add(json_key)
@@ -72,7 +152,11 @@ class NoteManager:
             except Exception:
                 valid_names = set()
             for field_name, value in fields.items():
-                if field_name in consumed or field_name not in valid_names:
+                if (
+                    field_name in consumed
+                    or field_name in protected
+                    or field_name not in valid_names
+                ):
                     continue
                 try:
                     note[field_name] = value
@@ -81,6 +165,8 @@ class NoteManager:
             return
 
         for field_name, value in fields.items():
+            if field_name in protected:
+                continue
             try:
                 note[field_name] = value
             except Exception:
