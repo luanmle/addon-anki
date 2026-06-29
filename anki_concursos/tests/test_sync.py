@@ -1531,3 +1531,44 @@ def test_sync_skips_reconcile_on_release_mismatch(mock_sync_setup):
 
     engine.note_manager.suspend_note.assert_not_called()
     assert msgs[0] == (True, "Tudo atualizado.")
+
+
+def test_sync_hash_skipped_noop_not_counted_in_log(mock_sync_setup):
+    engine, api, db, mock_mw = mock_sync_setup
+
+    deck = RemoteDeck("d1", "Deck 1", 123, "nt", 5, None, "2026", "2026")
+    db.get_all_decks.return_value = [deck]
+
+    manifest = MagicMock()
+    manifest.name = "Deck 1"
+    manifest.note_type = "nt"
+    manifest.supported_note_types = {
+        "basic": {"note_type": "nt", "fields": ["Front"], "field_mapping": {}}
+    }
+    api.get_deck_manifest.return_value = manifest
+
+    # local card already at the incoming hash → write is skipped (no-op)
+    db.get_card.return_value = RemoteCard(
+        card_id="c1", public_id="P1", card_version_id="v1", deck_id="d1",
+        anki_note_id=500, card_kind="basic", content_hash="SAME",
+        status="active", created_at="2026", updated_at="2026",
+        remote_fields={"Front": "Q"},
+    )
+
+    c_updated = MagicMock(
+        action="updated", card_kind="basic", card_id="c1", public_id="P1",
+        new_card_version_id="v2", tags=[], fields={"Front": "Q"},
+        template=None, content_hash="SAME",
+    )
+    sync_resp = MagicMock(
+        has_changes=True, changes=[c_updated], from_release=5, to_release=6
+    )
+    api.sync_deck_all_pages.return_value = sync_resp
+
+    engine.sync_all(lambda success, message: None)
+
+    engine.note_manager.update_note.assert_not_called()
+    # the no-op must not inflate the audit log
+    assert db.add_sync_log.called
+    logged = db.add_sync_log.call_args[0][0]
+    assert logged.cards_updated == 0

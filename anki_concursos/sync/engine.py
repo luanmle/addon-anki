@@ -605,6 +605,7 @@ class SyncEngine:
                     change, manifest, kind, field_mapping
                 )
                 new_hash = getattr(change, "content_hash", None)
+                wrote = False
                 if anki_note_id:
                     # Skip the collection write when content is unchanged: it
                     # would only bump the note's mod time and cause needless
@@ -624,6 +625,7 @@ class SyncEngine:
                             # card must be retried on the next sync rather than
                             # silently drifting out of sync forever.
                             continue
+                        wrote = True
                 else:
                     deck.anki_deck_id = self._resolve_anki_deck_id(deck)
                     anki_note_id = self.note_manager.create_note(
@@ -636,8 +638,11 @@ class SyncEngine:
                         fields=change.fields,
                         field_mapping=field_mapping
                     )
-                # Count by the action the server reported, not by local state.
-                stats["updated" if change.action == "updated" else "added"] += 1
+                    wrote = True
+                # Count only cards actually written — a hash-skipped no-op still
+                # refreshes bookkeeping below but is not a real change.
+                if wrote:
+                    stats["updated" if change.action == "updated" else "added"] += 1
 
                 self.db.upsert_card(RemoteCard(
                     card_id=change.card_id,
